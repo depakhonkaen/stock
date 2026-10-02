@@ -11,7 +11,19 @@
 .app{width:min(100%,720px);min-height:100vh;margin:auto;background:#fff}header{padding:18px 16px;background:var(--navy);color:#fff}
 header h1{margin:0;font-size:20px}header p{margin:6px 0 0;font-size:13px;opacity:.85}main{padding:16px}
 .scanner-card,.details{border:1px solid var(--border);border-radius:10px;background:#fff}.scanner-card{padding:12px}
-#reader{width:100%;overflow:hidden;border-radius:8px}.actions{display:grid;gap:10px;margin-top:12px}
+#reader{width:100%;overflow:hidden;border-radius:8px;min-height:240px;background:#111}
+#reader video{width:100%!important;height:auto!important;max-height:70vh;object-fit:cover;display:block}
+#reader__scan_region{width:100%!important}
+#reader__scan_region img{display:none!important}
+@media (max-width:600px){
+  main{padding:10px}
+  .scanner-card{padding:8px}
+  #reader{min-height:260px;border-radius:10px}
+  #reader video{max-height:62vh;object-fit:cover}
+  .manual-row{grid-template-columns:1fr 96px}
+  header{padding:15px 14px}
+  header h1{font-size:18px}
+}.actions{display:grid;gap:10px;margin-top:12px}
 button{min-height:48px;border:0;border-radius:6px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer;text-align:center;display:block}
 .primary{background:var(--navy);color:#fff}.secondary{background:#eef1f4;color:var(--text)}button:disabled{opacity:.5;cursor:not-allowed}
 .status{display:none;margin-top:14px;border-radius:10px;padding:14px;border:1px solid var(--border)}.status.show{display:block}
@@ -103,7 +115,7 @@ async function startScanner(){
           fps:15,
           formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
           qrbox:(w,h)=>{
-            const s=Math.max(240,Math.min(420,Math.floor(Math.min(w,h)*0.88)));
+            const s=Math.max(260,Math.min(520,Math.floor(Math.min(w,h)*0.94)));
             return {width:s,height:s};
           },
           aspectRatio:1,
