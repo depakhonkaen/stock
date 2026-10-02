@@ -243,8 +243,8 @@ async function processCode(code){
     if(finished) return;
     finished=true;
     cleanup();
-    showStatus('error','หมดเวลาเชื่อมต่อ','ระบบไม่ตอบกลับภายใน 20 วินาที กรุณาลองใหม่');
-  },20000);
+    showStatus('error','Apps Script ไม่ตอบกลับ','ระบบใช้เวลานานเกิน 10 วินาที กรุณาลองใหม่อีกครั้ง');
+  },10000);
 
   window[callbackName]=function(result){
     if(finished) return;
@@ -268,9 +268,16 @@ async function processCode(code){
 }
 
 function handleResult(result){
-  if(!result){showStatus('error','เกิดข้อผิดพลาด','ไม่ได้รับข้อมูลจากระบบ');return;}
+  if(!result){showStatus('error','เกิดข้อผิดพลาด','ไม่ได้รับข้อมูลจาก Apps Script');return;}
   if(result.type==='NOT_FOUND'){showStatus('error','✕ ไม่พบข้อมูล','รหัส '+escapeHtml(result.code||''));return;}
-  if(result.type==='INVALID'){showStatus('error','ข้อมูลไม่ถูกต้อง',escapeHtml(result.message||''));return;}
+  if(result.type==='INVALID'){showStatus('error','ข้อมูลไม่ถูกต้อง',escapeHtml(result.message||'กรุณาตรวจสอบรหัส'));return;}
+  if(result.type==='LOCK_TIMEOUT'){showStatus('warning','ระบบกำลังประมวลผล',escapeHtml(result.message||'กรุณาลองใหม่อีกครั้ง'));return;}
+  if(result.type==='EMPTY_SHEET'){showStatus('error','ไม่พบข้อมูลในชีต',escapeHtml(result.message||'ชีต Stock ยังไม่มีข้อมูล'));return;}
+  if(result.type==='SERVER_ERROR'){
+    const detail=(result.errorName?result.errorName+': ':'')+(result.message||'ไม่ทราบสาเหตุ');
+    showStatus('error','Apps Script เกิดข้อผิดพลาด','<b>รายละเอียด:</b> '+escapeHtml(detail));
+    return;
+  }
   if(result.type==='ALREADY_COUNTED'){
     showStatus('warning','⚠️ รายการนี้นับแล้ว','นับเมื่อ '+escapeHtml(result.asset?.countedAt||'-'));
     renderDetails(result.asset);return;
@@ -279,7 +286,7 @@ function handleResult(result){
     showStatus('success','✓ นับรายการเรียบร้อย','บันทึกเมื่อ '+escapeHtml(result.asset?.countedAt||'-'));
     renderDetails(result.asset);return;
   }
-  showStatus('error','ไม่ทราบผลการตรวจสอบ','');
+  showStatus('error','ไม่ทราบผลการตรวจสอบ','<b>รายละเอียด:</b> '+escapeHtml(JSON.stringify(result))); 
 }
 
 function renderDetails(asset){
