@@ -107,9 +107,8 @@ async function startScanner(){
     try{
       await scanner.start(
         {
-          facingMode:{exact:'environment'},
-          width:{ideal:1920},
-          height:{ideal:1080}
+          // html5-qrcode รับ cameraIdOrConfig แบบ object ได้เพียง 1 key
+          facingMode:'environment'
         },
         {
           fps:15,
