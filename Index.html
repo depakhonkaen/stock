@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>ระบบตรวจนับครุภัณฑ์</title>
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<style>
+:root{--navy:#0c2f53;--green:#127c56;--red:#b42318;--bg:#f6f8fa;--border:#d9dee5;--text:#17212b;--muted:#667085}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Arial,"Noto Sans Thai",sans-serif}
+.app{width:min(100%,720px);min-height:100vh;margin:auto;background:#fff}header{padding:18px 16px;background:var(--navy);color:#fff}
+header h1{margin:0;font-size:20px}header p{margin:6px 0 0;font-size:13px;opacity:.85}main{padding:16px}
+.scanner-card,.details{border:1px solid var(--border);border-radius:10px;background:#fff}.scanner-card{padding:12px}
+#reader{width:100%;overflow:hidden;border-radius:8px}.actions{display:grid;gap:10px;margin-top:12px}
+button,.filebtn{min-height:48px;border:0;border-radius:6px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer;text-align:center;display:block}
+.primary{background:var(--navy);color:#fff}.secondary{background:#eef1f4;color:var(--text)}button:disabled{opacity:.5;cursor:not-allowed}
+.filebtn{background:#e7f3ee;color:var(--green);border:1px solid #8bd0b3}
+.status{display:none;margin-top:14px;border-radius:10px;padding:14px;border:1px solid var(--border)}.status.show{display:block}
+.status.success{border-color:#8bd0b3;background:#f0faf6}.status.warning{border-color:#f2c27b;background:#fff9ed}.status.error{border-color:#f0a7a2;background:#fff5f4}
+.status-title{font-size:18px;font-weight:800;margin-bottom:4px}.status-code{color:var(--muted);font-size:13px;line-height:1.5}
+.details{display:none;margin-top:14px;overflow:hidden}.details.show{display:block}.detail-row{display:grid;grid-template-columns:42% 58%;border-bottom:1px solid var(--border)}
+.detail-row:last-child{border-bottom:0}.detail-label,.detail-value{padding:11px 12px;overflow-wrap:anywhere}.detail-label{background:#f8fafc;color:var(--muted);font-size:13px}.detail-value{font-weight:600;font-size:14px}
+.hint{margin:12px 2px 0;color:var(--muted);font-size:13px;line-height:1.5}.manual{margin-top:16px;border-top:1px solid var(--border);padding-top:16px}
+.manual label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}.manual-row{display:grid;grid-template-columns:1fr 110px;gap:8px}
+input[type=text]{width:100%;min-height:48px;border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:16px;outline:none}.loading{opacity:.7;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="app">
+<header><h1>ระบบตรวจนับครุภัณฑ์</h1><p>สแกน QR Code เพื่อตรวจนับและบันทึกวันเวลาการตรวจนับ</p></header>
+<main>
+<section class="scanner-card"><div id="reader"></div>
+<div class="actions">
+  <button id="startBtn" class="primary" type="button">📷 เริ่มสแกน</button>
+  <button id="stopBtn" class="secondary" type="button" disabled>หยุดสแกน</button>
+</div>
+<p class="hint">กด “เริ่มสแกน” เพื่อเปิดกล้องสด จากนั้นหันกล้องไปที่ QR Code ของครุภัณฑ์ ระบบจะอ่านรหัสให้อัตโนมัติ</p></section>
+<div id="status" class="status"></div><div id="details" class="details"></div>
+<button id="nextBtn" class="primary" type="button" style="display:none;width:100%;margin-top:14px">📷 สแกนชิ้นต่อไป</button>
+<section class="manual"><label for="manualCode">กรอกรหัสด้วยตนเอง (กรณีกล้องใช้งานไม่ได้)</label><div class="manual-row"><input id="manualCode" type="text" placeholder="เช่น depa620101336" autocomplete="off"><button class="primary" type="button" id="manualBtn">ค้นหา</button></div></section>
+</main></div>
+<script>
+let scanner=null;
+let scannerState='idle'; // idle | starting | running | stopping
+let processing=false;
+let lastCode='';
+let lastScanTime=0;
+
+const startBtn=document.getElementById('startBtn');
+const stopBtn=document.getElementById('stopBtn');
+const manualBtn=document.getElementById('manualBtn');
+const statusBox=document.getElementById('status');
+const details=document.getElementById('details');
+const manualCode=document.getElementById('manualCode');
+const nextBtn=document.getElementById('nextBtn');
+
+function setScannerButtons(){
+  const busy=scannerState==='starting'||scannerState==='stopping';
+  startBtn.disabled=busy||scannerState==='running';
+  stopBtn.disabled=busy||scannerState!=='running';
+}
+
+function isInAppBrowser(){
+  return /Line\/|FBAN|FBAV|Instagram|MicroMessenger|; wv\)/i.test(navigator.userAgent);
+}
+
+function waitForQrLibrary(timeout=15000){
+  return new Promise((resolve,reject)=>{
+    const started=Date.now();
+    (function check(){
+      if(typeof Html5Qrcode!=='undefined') return resolve();
+      if(Date.now()-started>=timeout) return reject(new Error('โหลดตัวสแกน QR ไม่สำเร็จ (ตรวจสอบอินเทอร์เน็ต)'));
+      setTimeout(check,100);
+    })();
+  });
+}
+
+async function startScanner(){
+  if(scannerState!=='idle') return;
+  scannerState='starting';
+  setScannerButtons();
+  clearDetails();
+
+  try{
+    await waitForQrLibrary();
+
+    if(!window.isSecureContext||!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+      throw new Error('NO_MEDIA');
+    }
+
+    scanner=new Html5Qrcode('reader');
+
+    try{
+      await scanner.start(
+        {facingMode:'environment'},
+        {
+          fps:10,
+          qrbox:(w,h)=>{
+            const s=Math.max(180,Math.min(280,Math.floor(Math.min(w,h)*0.72)));
+            return {width:s,height:s};
+          },
+          aspectRatio:1
+        },
+        onScanSuccess,
+        ()=>{}
+      );
+    }catch(firstErr){
+      const cams=await Html5Qrcode.getCameras();
+      if(!cams||!cams.length) throw firstErr;
+      await scanner.start(
+        cams[0].id,
+        {fps:10,qrbox:{width:250,height:250}},
+        onScanSuccess,
+        ()=>{}
+      );
+    }
+
+    scannerState='running';
+    showStatus('success','พร้อมสแกน','หันกล้องไปที่ QR Code ของครุภัณฑ์');
+  }catch(error){
+    await destroyScanner();
+    showCameraError(error);
+  }finally{
+    if(scannerState==='starting') scannerState='idle';
+    setScannerButtons();
+  }
+}
+
+function showCameraError(error){
+  const msg=String(error?.message||error||'');
+  let hint='';
+  if(isInAppBrowser()){
+  showStatus('warning','แนะนำให้เปิดด้วย Chrome/Safari','เบราว์เซอร์ในแอปบางตัวอาจไม่อนุญาตให้ใช้กล้องสด');
+}
+
+async function destroyScanner(){
+  const old=scanner;
+  scanner=null;
+  scannerState='idle';
+  if(old){
+    try{await old.stop();}catch(_){}
+    try{old.clear();}catch(_){}
+  }
+  setScannerButtons();
+}
+
+async function stopScanner(){
+  if(scannerState!=='running') return;
+  scannerState='stopping';
+  setScannerButtons();
+  await destroyScanner();
+}
+
+function onScanSuccess(decodedText){
+  const code=String(decodedText||'').trim();
+  const now=Date.now();
+  if(!code||processing) return;
+  if(code===lastCode&&now-lastScanTime<3000) return;
+  lastCode=code;
+  lastScanTime=now;
+  processCode(code);
+}
+
+async function processCode(code){
+  if(!code||processing) return;
+  processing=true;
+  document.body.classList.add('loading');
+
+  if(scannerState==='running') await stopScanner();
+
+  showStatus('success','กำลังตรวจสอบ...','รหัส '+escapeHtml(code));
+  clearDetails();
+
+  // GitHub Pages ไม่สามารถใช้ google.script.run ได้
+  // จึงเรียก Apps Script Web App ด้วย JSONP
+  const baseUrl='https://script.google.com/macros/s/AKfycbx2BZJGGdmXBPV-qVF1xBtyaPP8C5FGRe3P1djcSavVjQYxwaytqEW57yMHoozHykaM/exec';
+  const callbackName='stockCallback_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+
+  window[callbackName]=function(result){
+    try{
+      handleResult(result);
+    }finally{
+      processing=false;
+      document.body.classList.remove('loading');
+      delete window[callbackName];
+      const script=document.getElementById(callbackName);
+      if(script) script.remove();
+    }
+  };
+
+  const script=document.createElement('script');
+  script.id=callbackName;
+  script.src=baseUrl
+    +'?action=markAsCounted'
+    +'&code='+encodeURIComponent(code)
+    +'&callback='+encodeURIComponent(callbackName);
+  script.onerror=function(){
+    processing=false;
+    document.body.classList.remove('loading');
+    delete window[callbackName];
+    script.remove();
+    showStatus('error','เชื่อมต่อ Apps Script ไม่สำเร็จ','ตรวจสอบว่า Web App ถูก Deploy เป็น “Anyone” และ URL ในระบบถูกต้อง');
+  };
+  document.body.appendChild(script);
+}
+function handleResult(result){
+  if(!result){showStatus('error','เกิดข้อผิดพลาด','ไม่ได้รับข้อมูลจากระบบ');return;}
+  if(result.type==='NOT_FOUND'){showStatus('error','✕ ไม่พบข้อมูล','รหัส '+escapeHtml(result.code||''));return;}
+  if(result.type==='INVALID'){showStatus('error','ข้อมูลไม่ถูกต้อง',escapeHtml(result.message||''));return;}
+  if(result.type==='ALREADY_COUNTED'){
+    showStatus('warning','⚠️ รายการนี้นับแล้ว','นับเมื่อ '+escapeHtml(result.asset?.countedAt||'-'));
+    renderDetails(result.asset);return;
+  }
+  if(result.type==='COUNTED'){
+    showStatus('success','✓ นับรายการเรียบร้อย','บันทึกเมื่อ '+escapeHtml(result.asset?.countedAt||'-'));
+    renderDetails(result.asset);return;
+  }
+  showStatus('error','ไม่ทราบผลการตรวจสอบ','');
+}
+
+function renderDetails(asset){
+  if(!asset) return;
+  const rows=[
+    ['รหัส',asset.code],
+    ['ชื่อครุภัณฑ์',asset.name],
+    ['จำนวนเงิน',formatNumber(asset.amount)],
+    ['จำนวนปัจจุบัน',asset.currentQuantity],
+    ['สถานะ',asset.counted],
+    ['วันเวลาที่ตรวจนับ',asset.countedAt],
+    ['Location',asset.location],
+    ['หมายเหตุ',asset.note]
+  ];
+  details.innerHTML=rows.map(([label,value])=>
+    '<div class="detail-row"><div class="detail-label">'+escapeHtml(label)+'</div>'+
+    '<div class="detail-value">'+escapeHtml(value??'-')+'</div></div>'
+  ).join('');
+  details.classList.add('show');
+  nextBtn.style.display='block';
+}
+
+function clearDetails(){details.innerHTML='';details.classList.remove('show');nextBtn.style.display='none';}
+
+function showStatus(type,title,message){
+  statusBox.className='status show '+type;
+  statusBox.innerHTML='<div class="status-title">'+title+'</div><div class="status-code">'+(message||'')+'</div>';
+}
+
+function formatNumber(value){
+  if(value===null||value===undefined||value==='') return '-';
+  const number=Number(value);
+  return Number.isFinite(number)?number.toLocaleString('th-TH',{maximumFractionDigits:2}):String(value);
+}
+
+function escapeHtml(value){
+  return String(value??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+startBtn.addEventListener('click',startScanner);
+stopBtn.addEventListener('click',stopScanner);
+manualBtn.addEventListener('click',submitManual);
+nextBtn.addEventListener('click',()=>fileInput.click());
+manualCode.addEventListener('keydown',e=>{if(e.key==='Enter') submitManual();});
+
+setScannerButtons();
+if(isInAppBrowser()){
+  showStatus('warning','แนะนำให้เปิดด้วย Chrome/Safari','เบราว์เซอร์ในแอป (เช่น LINE) มักเปิดกล้องไม่ได้ ถ้าเปิดไม่ได้ให้ใช้ปุ่ม “ถ่ายรูป / เลือกรูป QR Code”');
+}
+</script>
+</body>
+</html>
