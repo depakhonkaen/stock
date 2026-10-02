@@ -34,18 +34,42 @@ button{min-height:48px;border:0;border-radius:6px;padding:12px 16px;font-size:16
 .hint{margin:12px 2px 0;color:var(--muted);font-size:13px;line-height:1.5}.manual{margin-top:16px;border-top:1px solid var(--border);padding-top:16px}
 .manual label{display:block;font-size:13px;color:var(--muted);margin-bottom:6px}.manual-row{display:grid;grid-template-columns:1fr 110px;gap:8px}
 input[type=text]{width:100%;min-height:48px;border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:16px;outline:none}.loading{opacity:.7;pointer-events:none}
+.cam{position:relative}
+#reader{touch-action:none}
+.focus-ring{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border:2px solid #fff;border-radius:50%;box-shadow:0 0 0 1px rgba(0,0,0,.4);pointer-events:none;opacity:0;z-index:5}
+.focus-ring.show{animation:focusPulse .9s ease-out}
+@keyframes focusPulse{0%{opacity:1;transform:scale(1.5)}60%{opacity:1;transform:scale(1)}100%{opacity:0;transform:scale(1)}}
+.cam-tools{display:none;align-items:center;gap:10px;margin-top:12px}.cam-tools.show{display:flex}
+.cam-tools button{flex:none;width:48px;min-height:44px;padding:0;font-size:22px}
+.cam-tools input[type=range]{flex:1;min-width:0;min-height:44px;padding:0;border:0;accent-color:var(--navy)}
+.zoom-label{flex:none;min-width:48px;text-align:right;font-size:14px;font-weight:700;color:var(--muted)}
+.cam-note{display:none;margin:8px 2px 0;color:var(--muted);font-size:13px;line-height:1.5}.cam-note.show{display:block}
+.pick{background:#e7f3ee;color:var(--green);border:1px solid #8bd0b3}
+#fileInput{display:none}
+#fileReader{position:absolute;left:-9999px;top:0;width:300px;height:300px;overflow:hidden}
+.preview{display:none;align-items:center;gap:12px;margin-top:12px;border:1px solid var(--border);border-radius:8px;padding:8px}.preview.show{display:flex}
+.preview img{flex:none;width:72px;height:72px;object-fit:contain;background:#f8fafc;border-radius:6px}
+.preview .pname{flex:1;min-width:0;font-size:13px;color:var(--muted);overflow-wrap:anywhere}
+.preview button{flex:none;min-height:36px;padding:6px 12px;font-size:14px}
+.drag{outline:2px dashed var(--green);outline-offset:-4px;background:#f0faf6}
 </style>
 </head>
 <body>
 <div class="app">
 <header><h1>ระบบตรวจนับครุภัณฑ์</h1><p>สแกน QR Code เพื่อตรวจนับและบันทึกวันเวลาการตรวจนับ</p></header>
 <main>
-<section class="scanner-card"><div id="reader"></div>
+<section class="scanner-card"><div class="cam"><div id="reader"></div><div id="focusRing" class="focus-ring"></div></div>
+<div id="camTools" class="cam-tools"><button id="zoomOut" class="secondary" type="button" aria-label="ซูมออก">−</button><input id="zoomRange" type="range" min="1" max="1" step="0.1" value="1" aria-label="ซูม"><button id="zoomIn" class="secondary" type="button" aria-label="ซูมเข้า">+</button><span id="zoomLabel" class="zoom-label">1.0×</span></div>
+<p id="camNote" class="cam-note"></p>
 <div class="actions">
   <button id="startBtn" class="primary" type="button">📷 เริ่มสแกน</button>
   <button id="stopBtn" class="secondary" type="button" disabled>หยุดสแกน</button>
+  <button id="pickBtn" class="pick" type="button">🖼️ เลือกรูป QR Code จากเครื่อง</button>
+  <input id="fileInput" type="file" accept="image/*">
 </div>
-<p class="hint">กด “เริ่มสแกน” เพื่อเปิดกล้องสด จากนั้นหันกล้องไปที่ QR Code ของครุภัณฑ์ ระบบจะอ่านรหัสให้อัตโนมัติ</p></section>
+<div id="preview" class="preview"><img id="previewImg" alt="รูป QR Code ที่เลือก"><div id="previewName" class="pname"></div><button id="previewClear" class="secondary" type="button">ลบรูป</button></div>
+<div id="fileReader" aria-hidden="true"></div>
+<p class="hint">กด “เริ่มสแกน” เพื่อเปิดกล้องสด จากนั้นหันกล้องไปที่ QR Code ของครุภัณฑ์ ระบบจะอ่านรหัสให้อัตโนมัติ<br>แตะที่ภาพเพื่อโฟกัส และใช้แถบซูมหรือบีบนิ้วเพื่อซูม (ถ้าอุปกรณ์รองรับ)<br>หรือกด “เลือกรูป QR Code” ลากรูปมาวางในกรอบนี้ หรือกด Ctrl+V เพื่อวางรูป QR Code</p></section>
 <div id="status" class="status"></div><div id="details" class="details"></div>
 <button id="nextBtn" class="primary" type="button" style="display:none;width:100%;margin-top:14px">📷 สแกนชิ้นต่อไป</button>
 <section class="manual"><label for="manualCode">กรอกรหัสด้วยตนเอง (กรณีกล้องใช้งานไม่ได้)</label><div class="manual-row"><input id="manualCode" type="text" placeholder="เช่น ขก470112001" autocomplete="off"><button class="primary" type="button" id="manualBtn">ค้นหา</button></div></section>
@@ -89,11 +113,310 @@ function waitForQrLibrary(timeout=15000){
   });
 }
 
+// ===== ควบคุมกล้อง: แตะเพื่อโฟกัส / ซูม (แถบเลื่อน, ปุ่ม +/-, บีบนิ้ว) =====
+const camTools=document.getElementById('camTools');
+const camNote=document.getElementById('camNote');
+const zoomRange=document.getElementById('zoomRange');
+const zoomLabel=document.getElementById('zoomLabel');
+const zoomInBtn=document.getElementById('zoomIn');
+const zoomOutBtn=document.getElementById('zoomOut');
+const focusRing=document.getElementById('focusRing');
+const readerEl=document.getElementById('reader');
+
+let camTrack=null;
+let camCaps=null;
+let zoomValue=1;
+let zoomBusy=false;
+let zoomPending=null;
+let focusTimer=null;
+let pinchStartDist=0;
+let pinchStartZoom=1;
+let lastPinchAt=0;
+
+function getCamTrack(){
+  const video=document.querySelector('#reader video');
+  const stream=video&&video.srcObject;
+  return stream&&stream.getVideoTracks?(stream.getVideoTracks()[0]||null):null;
+}
+
+async function tryConstraint(c){
+  try{await camTrack.applyConstraints({advanced:[c]});return true;}catch(_){return false;}
+}
+
+function showCamNote(text){
+  camNote.textContent=text||'';
+  camNote.classList.toggle('show',!!text);
+}
+
+function resetCameraControls(){
+  clearTimeout(focusTimer);
+  camTrack=null;
+  camCaps=null;
+  zoomBusy=false;
+  zoomPending=null;
+  pinchStartDist=0;
+  camTools.classList.remove('show');
+  showCamNote('');
+}
+
+async function setupCameraControls(){
+  resetCameraControls();
+  try{
+    camTrack=getCamTrack();
+    if(!camTrack||!camTrack.getCapabilities) return;
+    camCaps=camTrack.getCapabilities();
+
+    // โฟกัสอัตโนมัติแบบต่อเนื่อง (ถ้ารองรับ)
+    if(Array.isArray(camCaps.focusMode)&&camCaps.focusMode.includes('continuous')){
+      await tryConstraint({focusMode:'continuous'});
+    }
+
+    // ซูม (Chrome บน Android รองรับ / iPhone Safari ส่วนใหญ่ไม่รองรับ)
+    if(camCaps.zoom&&camCaps.zoom.max>camCaps.zoom.min){
+      const min=camCaps.zoom.min, max=camCaps.zoom.max;
+      zoomRange.min=min;
+      zoomRange.max=max;
+      zoomRange.step=camCaps.zoom.step||0.1;
+      camTools.classList.add('show');
+      await applyZoom(Math.min(max,Math.max(min,1.15)));
+    }else{
+      showCamNote('อุปกรณ์/เบราว์เซอร์นี้ไม่รองรับการซูมกล้องด้วยระบบ ให้ขยับเครื่องเข้าใกล้ QR Code แทน');
+    }
+  }catch(_){}
+}
+
+function updateZoomUi(){
+  zoomRange.value=zoomValue;
+  zoomLabel.textContent=zoomValue.toFixed(1)+'×';
+}
+
+async function applyZoom(v){
+  if(!camTrack||!camCaps||!camCaps.zoom) return;
+  v=Math.min(camCaps.zoom.max,Math.max(camCaps.zoom.min,v));
+  zoomValue=v;
+  updateZoomUi();
+  zoomPending=v;
+  if(zoomBusy) return;
+  zoomBusy=true;
+  try{
+    while(zoomPending!==null){
+      const target=zoomPending;
+      zoomPending=null;
+      await tryConstraint({zoom:target});
+    }
+  }finally{
+    zoomBusy=false;
+  }
+}
+
+function zoomStepSize(){
+  if(!camCaps||!camCaps.zoom) return 0.5;
+  const z=camCaps.zoom;
+  return Math.max(z.step||0.1,(z.max-z.min)/8);
+}
+
+async function focusAt(nx,ny){
+  if(!camTrack||!camCaps||!Array.isArray(camCaps.focusMode)) return;
+  const modes=camCaps.focusMode;
+  const canContinuous=modes.includes('continuous');
+  const poi=[{x:nx,y:ny}];
+
+  if(modes.includes('single-shot')){
+    if(!(await tryConstraint({focusMode:'single-shot',pointsOfInterest:poi}))){
+      await tryConstraint({focusMode:'single-shot'});
+    }
+    if(canContinuous){
+      clearTimeout(focusTimer);
+      focusTimer=setTimeout(()=>{if(camTrack) tryConstraint({focusMode:'continuous'});},1500);
+    }
+  }else if(canContinuous){
+    if(!(await tryConstraint({focusMode:'continuous',pointsOfInterest:poi}))){
+      // สลับโหมดเพื่อให้กล้องโฟกัสใหม่
+      if(modes.includes('manual')) await tryConstraint({focusMode:'manual'});
+      await new Promise(r=>setTimeout(r,150));
+      await tryConstraint({focusMode:'continuous'});
+    }
+  }
+}
+
+function showFocusRing(x,y){
+  focusRing.style.left=x+'px';
+  focusRing.style.top=y+'px';
+  focusRing.classList.remove('show');
+  void focusRing.offsetWidth;
+  focusRing.classList.add('show');
+}
+
+function touchDistance(t){
+  const dx=t[0].clientX-t[1].clientX;
+  const dy=t[0].clientY-t[1].clientY;
+  return Math.hypot(dx,dy);
+}
+
+readerEl.addEventListener('click',e=>{
+  if(scannerState!=='running'||Date.now()-lastPinchAt<400) return;
+  const rect=readerEl.getBoundingClientRect();
+  const x=e.clientX-rect.left;
+  const y=e.clientY-rect.top;
+  if(x<0||y<0||x>rect.width||y>rect.height) return;
+  showFocusRing(x,y);
+  focusAt(x/rect.width,y/rect.height);
+});
+
+readerEl.addEventListener('touchstart',e=>{
+  if(e.touches.length===2){
+    pinchStartDist=touchDistance(e.touches);
+    pinchStartZoom=zoomValue;
+  }
+},{passive:true});
+
+readerEl.addEventListener('touchmove',e=>{
+  if(e.touches.length===2&&pinchStartDist>0&&camCaps&&camCaps.zoom){
+    lastPinchAt=Date.now();
+    applyZoom(pinchStartZoom*touchDistance(e.touches)/pinchStartDist);
+  }
+},{passive:true});
+
+readerEl.addEventListener('touchend',e=>{
+  if(e.touches.length<2){
+    if(pinchStartDist>0) lastPinchAt=Date.now();
+    pinchStartDist=0;
+  }
+},{passive:true});
+
+zoomRange.addEventListener('input',()=>applyZoom(parseFloat(zoomRange.value)));
+zoomInBtn.addEventListener('click',()=>applyZoom(zoomValue+zoomStepSize()));
+zoomOutBtn.addEventListener('click',()=>applyZoom(zoomValue-zoomStepSize()));
+
+// ===== สแกน QR Code จากรูปภาพ (เลือกไฟล์ / ลากมาวาง / วางด้วย Ctrl+V) =====
+const pickBtn=document.getElementById('pickBtn');
+const fileInput=document.getElementById('fileInput');
+const previewBox=document.getElementById('preview');
+const previewImg=document.getElementById('previewImg');
+const previewName=document.getElementById('previewName');
+const previewClear=document.getElementById('previewClear');
+const scannerCard=document.querySelector('.scanner-card');
+let previewUrl=null;
+
+function showPreview(file){
+  clearPreview();
+  previewUrl=URL.createObjectURL(file);
+  previewImg.src=previewUrl;
+  previewName.textContent=file.name||'รูปที่วางจากคลิปบอร์ด';
+  previewBox.classList.add('show');
+}
+
+function clearPreview(){
+  if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null;}
+  previewImg.removeAttribute('src');
+  previewName.textContent='';
+  previewBox.classList.remove('show');
+}
+
+function loadImage(file){
+  return new Promise((resolve,reject)=>{
+    const url=URL.createObjectURL(file);
+    const img=new Image();
+    img.onload=()=>{URL.revokeObjectURL(url);resolve(img);};
+    img.onerror=()=>{URL.revokeObjectURL(url);reject(new Error('โหลดรูปไม่สำเร็จ'));};
+    img.src=url;
+  });
+}
+
+// เติมขอบขาวรอบรูปและปรับขนาด ช่วยให้อ่าน QR ที่ถูกตัดชิดขอบหรือรูปเล็ก/ใหญ่เกินไป
+async function makePaddedImage(file){
+  const img=await loadImage(file);
+  const w0=img.naturalWidth, h0=img.naturalHeight;
+  const longest=Math.max(w0,h0);
+  let scale=1;
+  if(longest>1200) scale=1200/longest;
+  else if(longest<500) scale=600/longest;
+  const w=Math.round(w0*scale), h=Math.round(h0*scale);
+  const pad=Math.round(Math.max(w,h)*0.12);
+  const canvas=document.createElement('canvas');
+  canvas.width=w+pad*2;
+  canvas.height=h+pad*2;
+  const ctx=canvas.getContext('2d');
+  ctx.fillStyle='#fff';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.drawImage(img,pad,pad,w,h);
+  const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
+  if(!blob) throw new Error('แปลงรูปไม่สำเร็จ');
+  return new File([blob],'qr-padded.png',{type:'image/png'});
+}
+
+async function decodeQrFromFile(file){
+  const reader=new Html5Qrcode('fileReader');
+  try{
+    try{return await reader.scanFile(file,false);}catch(_){}
+    const padded=await makePaddedImage(file);
+    return await reader.scanFile(padded,false);
+  }finally{
+    try{reader.clear();}catch(_){}
+  }
+}
+
+async function handleImageFile(file){
+  if(!file) return;
+  if(!/^image\//.test(file.type||'')){
+    showStatus('error','ไฟล์ไม่ใช่รูปภาพ','กรุณาเลือกไฟล์รูป เช่น JPG หรือ PNG');
+    return;
+  }
+  if(processing) return;
+  if(scannerState==='starting'||scannerState==='stopping'){
+    showStatus('warning','กล้องกำลังเปลี่ยนสถานะ','รอสักครู่แล้วลองเลือกรูปอีกครั้ง');
+    return;
+  }
+  if(scannerState==='running') await stopScanner();
+
+  clearDetails();
+  showPreview(file);
+  showStatus('success','กำลังอ่าน QR Code จากรูป...','');
+
+  try{
+    await waitForQrLibrary();
+    const text=String((await decodeQrFromFile(file))||'').trim();
+    if(!text) throw new Error('EMPTY');
+    processCode(text);
+  }catch(err){
+    showStatus('error','อ่าน QR Code จากรูปไม่ได้','ลองใช้รูปที่เห็น QR Code ทั้งอัน คมชัด ไม่เบลอหรือเอียงมาก หรือกรอกรหัสด้วยตนเอง');
+  }
+}
+
+pickBtn.addEventListener('click',()=>fileInput.click());
+fileInput.addEventListener('change',()=>{
+  const file=fileInput.files&&fileInput.files[0];
+  fileInput.value='';
+  handleImageFile(file);
+});
+previewClear.addEventListener('click',clearPreview);
+
+['dragenter','dragover'].forEach(type=>scannerCard.addEventListener(type,e=>{
+  e.preventDefault();
+  scannerCard.classList.add('drag');
+}));
+['dragleave','drop'].forEach(type=>scannerCard.addEventListener(type,e=>{
+  e.preventDefault();
+  scannerCard.classList.remove('drag');
+}));
+scannerCard.addEventListener('drop',e=>{
+  const file=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];
+  handleImageFile(file);
+});
+document.addEventListener('paste',e=>{
+  const files=e.clipboardData&&e.clipboardData.files;
+  if(files&&files.length&&/^image\//.test(files[0].type||'')){
+    e.preventDefault();
+    handleImageFile(files[0]);
+  }
+});
+
 async function startScanner(){
   if(scannerState!=='idle') return;
   scannerState='starting';
   setScannerButtons();
   clearDetails();
+  clearPreview();
 
   try{
     await waitForQrLibrary();
@@ -118,31 +441,14 @@ async function startScanner(){
             return {width:s,height:s};
           },
           aspectRatio:1,
-          disableFlip:false
+          disableFlip:false,
+          experimentalFeatures:{useBarCodeDetectorIfSupported:true}
         },
         onScanSuccess,
         ()=>{}
       );
 
-      // พยายามเปิด autofocus ต่อเนื่องและเพิ่ม zoom เล็กน้อย หากอุปกรณ์รองรับ
-      try{
-        const video=document.querySelector('#reader video');
-        const stream=video?.srcObject;
-        const track=stream?.getVideoTracks?.()[0];
-        const caps=track?.getCapabilities?.();
-        if(track&&caps){
-          const advanced={};
-          if(Array.isArray(caps.focusMode)&&caps.focusMode.includes('continuous')){
-            advanced.focusMode='continuous';
-          }
-          if(caps.zoom){
-            advanced.zoom=Math.min(caps.zoom.max ?? 1.5,Math.max(caps.zoom.min ?? 1,1.15));
-          }
-          if(Object.keys(advanced).length){
-            await track.applyConstraints({advanced:[advanced]});
-          }
-        }
-      }catch(_){}
+      await setupCameraControls();
     }catch(firstErr){
       // ไม่เรียก scanner.start() ซ้ำระหว่าง transition
       throw firstErr;
@@ -152,6 +458,7 @@ async function startScanner(){
     showStatus('success','พร้อมสแกน','หันกล้องไปที่ QR Code ของครุภัณฑ์');
   }catch(error){
     // start() ล้มเหลวระหว่าง transition: clear อย่างเดียว ห้าม stop() ซ้ำ
+    resetCameraControls();
     const failed=scanner;
     scanner=null;
     try{if(failed) await failed.clear();}catch(_){}
@@ -183,6 +490,7 @@ function showCameraError(error){
 }
 
 async function destroyScanner(){
+  resetCameraControls();
   const old=scanner;
   scanner=null;
   scannerState='idle';
