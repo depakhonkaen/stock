@@ -96,12 +96,14 @@ async function startScanner(){
       await scanner.start(
         {facingMode:'environment'},
         {
-          fps:10,
+          fps:15,
+          formatsToSupport:[Html5QrcodeSupportedFormats.QR_CODE],
           qrbox:(w,h)=>{
-            const s=Math.max(180,Math.min(280,Math.floor(Math.min(w,h)*0.72)));
+            const s=Math.max(220,Math.min(360,Math.floor(Math.min(w,h)*0.86)));
             return {width:s,height:s};
           },
-          aspectRatio:1
+          aspectRatio:1,
+          disableFlip:false
         },
         onScanSuccess,
         ()=>{}
