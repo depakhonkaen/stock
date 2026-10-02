@@ -145,20 +145,19 @@ async function startScanner(){
         }
       }catch(_){}
     }catch(firstErr){
-      const cams=await Html5Qrcode.getCameras();
-      if(!cams||!cams.length) throw firstErr;
-      await scanner.start(
-        cams[0].id,
-        {fps:10,qrbox:{width:250,height:250}},
-        onScanSuccess,
-        ()=>{}
-      );
+      // ไม่เรียก scanner.start() ซ้ำระหว่าง transition
+      throw firstErr;
     }
 
     scannerState='running';
     showStatus('success','พร้อมสแกน','หันกล้องไปที่ QR Code ของครุภัณฑ์');
   }catch(error){
-    await destroyScanner();
+    // start() ล้มเหลวระหว่าง transition: clear อย่างเดียว ห้าม stop() ซ้ำ
+    const failed=scanner;
+    scanner=null;
+    try{if(failed) await failed.clear();}catch(_){}
+    scannerState='idle';
+    setScannerButtons();
     showCameraError(error);
   }finally{
     if(scannerState==='starting') scannerState='idle';
