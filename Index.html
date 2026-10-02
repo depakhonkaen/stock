@@ -12,9 +12,8 @@
 header h1{margin:0;font-size:20px}header p{margin:6px 0 0;font-size:13px;opacity:.85}main{padding:16px}
 .scanner-card,.details{border:1px solid var(--border);border-radius:10px;background:#fff}.scanner-card{padding:12px}
 #reader{width:100%;overflow:hidden;border-radius:8px}.actions{display:grid;gap:10px;margin-top:12px}
-button,.filebtn{min-height:48px;border:0;border-radius:6px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer;text-align:center;display:block}
+button{min-height:48px;border:0;border-radius:6px;padding:12px 16px;font-size:16px;font-weight:700;cursor:pointer;text-align:center;display:block}
 .primary{background:var(--navy);color:#fff}.secondary{background:#eef1f4;color:var(--text)}button:disabled{opacity:.5;cursor:not-allowed}
-.filebtn{background:#e7f3ee;color:var(--green);border:1px solid #8bd0b3}
 .status{display:none;margin-top:14px;border-radius:10px;padding:14px;border:1px solid var(--border)}.status.show{display:block}
 .status.success{border-color:#8bd0b3;background:#f0faf6}.status.warning{border-color:#f2c27b;background:#fff9ed}.status.error{border-color:#f0a7a2;background:#fff5f4}
 .status-title{font-size:18px;font-weight:800;margin-bottom:4px}.status-code{color:var(--muted);font-size:13px;line-height:1.5}
@@ -40,6 +39,9 @@ input[type=text]{width:100%;min-height:48px;border:1px solid var(--border);borde
 <section class="manual"><label for="manualCode">กรอกรหัสด้วยตนเอง (กรณีกล้องใช้งานไม่ได้)</label><div class="manual-row"><input id="manualCode" type="text" placeholder="เช่น depa620101336" autocomplete="off"><button class="primary" type="button" id="manualBtn">ค้นหา</button></div></section>
 </main></div>
 <script>
+// ===== ตั้งค่า: URL ของ Apps Script Web App (ลงท้ายด้วย /exec) =====
+const API_URL='https://script.google.com/macros/s/AKfycbx2BZJGGdmXBPV-qVF1xBtyaPP8C5FGRe3P1djcSavVjQYxwaytqEW57yMHoozHykaM/exec';
+
 let scanner=null;
 let scannerState='idle'; // idle | starting | running | stopping
 let processing=false;
@@ -130,7 +132,18 @@ function showCameraError(error){
   const msg=String(error?.message||error||'');
   let hint='';
   if(isInAppBrowser()){
-  showStatus('warning','แนะนำให้เปิดด้วย Chrome/Safari','เบราว์เซอร์ในแอปบางตัวอาจไม่อนุญาตให้ใช้กล้องสด');
+    hint='ดูเหมือนเปิดลิงก์ในแอป (เช่น LINE/Facebook) ซึ่งมักบล็อกกล้อง กรุณาเปิดลิงก์ด้วย Chrome/Safari แทน';
+  }else if(msg==='NO_MEDIA'){
+    hint='เบราว์เซอร์ไม่อนุญาตให้ใช้กล้องในหน้านี้ ต้องเปิดผ่าน HTTPS ด้วย Chrome/Safari';
+  }else if(/permission|denied|notallowed|not allowed|policy/i.test(msg)){
+    hint='กรุณากดไอคอนแม่กุญแจที่แถบที่อยู่เว็บ เลือก “อนุญาต” กล้อง แล้วกด “เริ่มสแกน” ใหม่';
+  }else if(/NotFound|no camera|not found|ไม่พบ/i.test(msg)){
+    hint='ไม่พบกล้องในอุปกรณ์นี้ กรุณาใช้อุปกรณ์ที่มีกล้อง หรือกรอกรหัสด้วยตนเอง';
+  }else{
+    hint=escapeHtml(msg||'กรุณาลองใหม่');
+  }
+  const raw=escapeHtml((error&&error.name?error.name+': ':'')+msg);
+  showStatus('error','เปิดกล้องไม่ได้',hint+'<br><small style="color:#98a2b3">รายละเอียด: '+raw+'</small>');
 }
 
 async function destroyScanner(){
@@ -161,6 +174,13 @@ function onScanSuccess(decodedText){
   processCode(code);
 }
 
+function submitManual(){
+  const code=manualCode.value.trim();
+  if(!code){showStatus('error','กรุณากรอกรหัส','');return;}
+  processCode(code);
+}
+
+// เรียก Apps Script ด้วย JSONP (หน้านี้โฮสต์นอก Apps Script จึงใช้ google.script.run ไม่ได้)
 async function processCode(code){
   if(!code||processing) return;
   processing=true;
@@ -171,38 +191,46 @@ async function processCode(code){
   showStatus('success','กำลังตรวจสอบ...','รหัส '+escapeHtml(code));
   clearDetails();
 
-  // GitHub Pages ไม่สามารถใช้ google.script.run ได้
-  // จึงเรียก Apps Script Web App ด้วย JSONP
-  const baseUrl='https://script.google.com/macros/s/AKfycbx2BZJGGdmXBPV-qVF1xBtyaPP8C5FGRe3P1djcSavVjQYxwaytqEW57yMHoozHykaM/exec';
-  const callbackName='stockCallback_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  const callbackName='stockCb_'+Date.now()+'_'+Math.floor(Math.random()*100000);
+  const script=document.createElement('script');
+  let finished=false;
+
+  function cleanup(){
+    clearTimeout(timer);
+    processing=false;
+    document.body.classList.remove('loading');
+    try{delete window[callbackName];}catch(_){window[callbackName]=undefined;}
+    script.remove();
+  }
+
+  const timer=setTimeout(()=>{
+    if(finished) return;
+    finished=true;
+    cleanup();
+    showStatus('error','หมดเวลาเชื่อมต่อ','ระบบไม่ตอบกลับภายใน 20 วินาที กรุณาลองใหม่');
+  },20000);
 
   window[callbackName]=function(result){
-    try{
-      handleResult(result);
-    }finally{
-      processing=false;
-      document.body.classList.remove('loading');
-      delete window[callbackName];
-      const script=document.getElementById(callbackName);
-      if(script) script.remove();
-    }
+    if(finished) return;
+    finished=true;
+    cleanup();
+    handleResult(result);
   };
 
-  const script=document.createElement('script');
-  script.id=callbackName;
-  script.src=baseUrl
+  script.onerror=function(){
+    if(finished) return;
+    finished=true;
+    cleanup();
+    showStatus('error','เชื่อมต่อ Apps Script ไม่สำเร็จ','ตรวจสอบว่า Web App ถูก Deploy เป็น “Anyone” และ URL ถูกต้อง (และ Deploy เวอร์ชันใหม่หลังแก้ Code.gs แล้ว)');
+  };
+
+  script.src=API_URL
     +'?action=markAsCounted'
     +'&code='+encodeURIComponent(code)
     +'&callback='+encodeURIComponent(callbackName);
-  script.onerror=function(){
-    processing=false;
-    document.body.classList.remove('loading');
-    delete window[callbackName];
-    script.remove();
-    showStatus('error','เชื่อมต่อ Apps Script ไม่สำเร็จ','ตรวจสอบว่า Web App ถูก Deploy เป็น “Anyone” และ URL ในระบบถูกต้อง');
-  };
   document.body.appendChild(script);
 }
+
 function handleResult(result){
   if(!result){showStatus('error','เกิดข้อผิดพลาด','ไม่ได้รับข้อมูลจากระบบ');return;}
   if(result.type==='NOT_FOUND'){showStatus('error','✕ ไม่พบข้อมูล','รหัส '+escapeHtml(result.code||''));return;}
@@ -258,12 +286,12 @@ function escapeHtml(value){
 startBtn.addEventListener('click',startScanner);
 stopBtn.addEventListener('click',stopScanner);
 manualBtn.addEventListener('click',submitManual);
-nextBtn.addEventListener('click',()=>fileInput.click());
+nextBtn.addEventListener('click',startScanner);
 manualCode.addEventListener('keydown',e=>{if(e.key==='Enter') submitManual();});
 
 setScannerButtons();
 if(isInAppBrowser()){
-  showStatus('warning','แนะนำให้เปิดด้วย Chrome/Safari','เบราว์เซอร์ในแอป (เช่น LINE) มักเปิดกล้องไม่ได้ ถ้าเปิดไม่ได้ให้ใช้ปุ่ม “ถ่ายรูป / เลือกรูป QR Code”');
+  showStatus('warning','แนะนำให้เปิดด้วย Chrome/Safari','เบราว์เซอร์ในแอป (เช่น LINE) มักเปิดกล้องสดไม่ได้ หากเปิดไม่ได้ให้เปิดลิงก์นี้ด้วย Chrome/Safari แทน');
 }
 </script>
 </body>
