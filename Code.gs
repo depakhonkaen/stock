@@ -1,3 +1,5 @@
+// Apps Script backend only: the frontend (index.html) is hosted on GitHub Pages.
+// Do not use HtmlService/createHtmlOutputFromFile here.
 const SHEET_NAME = 'Stock';
 const LOCK_WAIT_MS = 3000;
 
