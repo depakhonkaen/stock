@@ -7,7 +7,17 @@ function doGet(e) {
   // GitHub Pages เรียก Apps Script ผ่าน JSONP
   // เพื่อให้กล้องอยู่บน GitHub Pages แต่ข้อมูลยังบันทึกใน Google Sheet
   if (action === 'markAsCounted') {
-    const result = markAsCounted(params.code || '');
+    let result;
+    try {
+      result = markAsCounted(params.code || '');
+    } catch (err) {
+      result = {
+        ok: false,
+        type: 'INVALID',
+        message: String((err && err.message) || err)
+      };
+    }
+
     const callback = String(params.callback || '').trim();
 
     if (callback && /^[A-Za-z_$][0-9A-Za-z_$]*$/.test(callback)) {
