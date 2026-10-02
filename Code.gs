@@ -1,5 +1,8 @@
 const SHEET_NAME = 'Stock';
 
+// ใส่ Spreadsheet ID ของคุณเองตรงนี้ (ไม่ต้องใส่ URL ทั้งหมด)
+const SPREADSHEET_ID = '1lJdmdxCdwKe_KFxczc0z6T8qAqtj0jTI5_B6QJdsSrE';
+
 function doGet(e) {
   const params = e && e.parameter ? e.parameter : {};
   const action = String(params.action || '').trim();
@@ -38,7 +41,8 @@ function doGet(e) {
 }
 
 function getSheet_() {
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAME);
+  const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName(SHEET_NAME);
   if (!sheet) throw new Error('ไม่พบชีต "' + SHEET_NAME + '"');
   return sheet;
 }
