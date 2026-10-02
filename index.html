@@ -540,19 +540,23 @@ async function processCode(code){
   let finished=false;
 
   function cleanup(){
-    clearTimeout(timer);
+    clearInterval(timer);
     processing=false;
     document.body.classList.remove('loading');
     try{delete window[callbackName];}catch(_){window[callbackName]=undefined;}
     script.remove();
   }
 
-  const timer=setTimeout(()=>{
+  // ไม่จำกัดเวลา: รอจนกว่า Apps Script จะค้นในชีตและตอบกลับ
+  // แสดงจำนวนวินาทีที่รอ เพื่อให้รู้ว่าระบบยังทำงานอยู่
+  const startedAt=Date.now();
+  const timer=setInterval(()=>{
     if(finished) return;
-    finished=true;
-    cleanup();
-    showStatus('error','Apps Script ไม่ตอบกลับ','ระบบใช้เวลานานเกิน 10 วินาที กรุณาลองใหม่อีกครั้ง');
-  },10000);
+    const sec=Math.floor((Date.now()-startedAt)/1000);
+    if(sec>=3){
+      showStatus('success','กำลังตรวจสอบ...','รหัส '+escapeHtml(code)+'<br>กำลังรอผลจากชีต... '+sec+' วินาที');
+    }
+  },1000);
 
   window[callbackName]=function(result){
     if(finished) return;
