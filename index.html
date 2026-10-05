@@ -619,7 +619,7 @@
             zoomRange.max = max;
             zoomRange.step = camCaps.zoom.step || 0.1;
             camTools.classList.add("show");
-            await applyZoom(Math.min(max, Math.max(min, 1.15)));
+            await applyZoom(Math.min(max, Math.max(min, 1.5)));
           } else {
             showCamNote(
               "อุปกรณ์/เบราว์เซอร์นี้ไม่รองรับการซูมกล้องด้วยระบบ ให้ขยับเครื่องเข้าใกล้ QR Code แทน",
@@ -839,6 +839,21 @@
       }
 
       async function decodeQrFromFile(file) {
+        // 1) ลองตัวอ่านของเครื่องก่อน (แม่นกว่า) 2) ถ้าไม่ติดค่อยใช้ไลบรารี
+        const det = await getNativeDetector();
+        if (det && typeof createImageBitmap === "function") {
+          try {
+            const bmp = await createImageBitmap(file);
+            try {
+              const codes = await det.detect(bmp);
+              const hit = codes && codes.find((c) => c.rawValue);
+              if (hit) return hit.rawValue;
+            } finally {
+              if (bmp.close) bmp.close();
+            }
+          } catch (_) {}
+        }
+        if (typeof Html5Qrcode === "undefined") throw new Error("EMPTY");
         const reader = new Html5Qrcode("fileReader");
         try {
           try {
@@ -879,8 +894,12 @@
         showStatus("success", "กำลังอ่าน QR Code จากรูป...", "");
 
         try {
-          await waitForQrLibrary();
-          const text = String((await decodeQrFromFile(file)) || "").trim();
+          try {
+            await waitForQrLibrary();
+          } catch (e) {
+            if (!(await getNativeDetector())) throw e;
+          }
+          const text = fixText(await decodeQrFromFile(file));
           if (!text) throw new Error("EMPTY");
           processCode(text);
         } catch (err) {
@@ -925,6 +944,206 @@
         }
       });
 
+      // ===== ตัวอ่าน QR แบบ native (BarcodeDetector ของ Chrome/Android) =====
+      // แม่นและเร็วกว่าตัวถอดแบบ JavaScript มาก โดยเฉพาะ QR เล็ก/หมึกบวม/เอียง
+      let nativeDetector = null;
+      let nativeStream = null;
+      let nativeVideo = null;
+      let nativeTimer = null;
+      let nativeRunning = false;
+      let nativeFailCount = 0;
+      let nativeDisabled = false; // ถ้า native ใช้ไม่ได้ ให้ไปใช้ไลบรารีแทน
+
+      async function getNativeDetector() {
+        if (nativeDisabled || !("BarcodeDetector" in window)) return null;
+        if (nativeDetector) return nativeDetector;
+        try {
+          const formats = await BarcodeDetector.getSupportedFormats();
+          if (!formats.includes("qr_code")) return null;
+          nativeDetector = new BarcodeDetector({ formats: ["qr_code"] });
+          return nativeDetector;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      // แก้ข้อความที่ถอดผิด charset (UTF-8 อักษรไทยถูกอ่านเป็น Latin-1 เช่น "à¸‚à¸")
+      function fixText(raw) {
+        let t = String(raw || "").trim();
+        try {
+          if (
+            t &&
+            !/[\u0e00-\u0e7f]/.test(t) &&
+            /[\u00c2-\u00f4][\u0080-\u00bf]/.test(t) &&
+            [...t].every((c) => c.charCodeAt(0) <= 0xff)
+          ) {
+            const bytes = Uint8Array.from([...t].map((c) => c.charCodeAt(0)));
+            const fixed = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+            if (/[\u0e00-\u0e7f]/.test(fixed)) t = fixed.trim();
+          }
+        } catch (_) {}
+        return t;
+      }
+
+      function stopNative() {
+        nativeRunning = false;
+        clearTimeout(nativeTimer);
+        nativeTimer = null;
+        if (nativeStream) {
+          try {
+            nativeStream.getTracks().forEach((tr) => tr.stop());
+          } catch (_) {}
+        }
+        if (nativeVideo) {
+          try {
+            nativeVideo.srcObject = null;
+            nativeVideo.remove();
+          } catch (_) {}
+        }
+        nativeStream = null;
+        nativeVideo = null;
+      }
+
+      async function startNative(detector) {
+        nativeFailCount = 0;
+        // ขอภาพความละเอียดสูง (Full HD) ถ้าไม่ได้ค่อยลดลง
+        const attempts = [
+          {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+            frameRate: { ideal: 30 },
+          },
+          { facingMode: { ideal: "environment" } },
+        ];
+        let stream = null;
+        let lastErr = null;
+        for (const v of attempts) {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({
+              video: v,
+              audio: false,
+            });
+            break;
+          } catch (e) {
+            lastErr = e;
+            if (/NotAllowed|Permission|Security/i.test(String((e && e.name) || "")))
+              break;
+          }
+        }
+        if (!stream) throw lastErr || new Error("ไม่พบกล้อง");
+
+        const video = document.createElement("video");
+        video.setAttribute("playsinline", "");
+        video.setAttribute("muted", "");
+        video.muted = true;
+        video.autoplay = true;
+        video.srcObject = stream;
+        readerEl.innerHTML = "";
+        readerEl.appendChild(video);
+        try {
+          await video.play();
+        } catch (_) {}
+
+        nativeStream = stream;
+        nativeVideo = video;
+        nativeDetector = detector;
+        nativeRunning = true;
+        nativeLoop();
+      }
+
+      async function nativeLoop() {
+        if (!nativeRunning) return;
+        try {
+          const v = nativeVideo;
+          if (v && v.readyState >= 2 && v.videoWidth > 0 && !processing) {
+            const codes = await nativeDetector.detect(v);
+            nativeFailCount = 0;
+            if (codes && codes.length) {
+              const hit = codes.find((c) => c.rawValue) || codes[0];
+              if (hit && hit.rawValue) onScanSuccess(hit.rawValue);
+            }
+          }
+        } catch (_) {
+          nativeFailCount++;
+          if (nativeFailCount >= 5) {
+            // ตัวอ่านของระบบใช้งานไม่ได้ สลับไปใช้ไลบรารีสำรอง
+            nativeRunning = false;
+            switchToLibrary();
+            return;
+          }
+        }
+        if (nativeRunning) nativeTimer = setTimeout(nativeLoop, 70);
+      }
+
+      async function switchToLibrary() {
+        nativeDisabled = true;
+        await destroyScanner();
+        showStatus(
+          "warning",
+          "สลับไปใช้ตัวอ่านสำรอง",
+          "ตัวอ่านของเครื่องใช้ไม่ได้ กำลังเปิดกล้องใหม่",
+        );
+        startScanner();
+      }
+
+      // ===== ตัวอ่านสำรอง (ไลบรารี html5-qrcode) สำหรับเบราว์เซอร์ที่ไม่มี BarcodeDetector เช่น iPhone =====
+      async function startLibrary() {
+        const base = {
+          fps: 20,
+          formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
+          // QR ไม่กลับด้าน ปิดการลองกลับด้านเพื่อให้ถอดเร็วขึ้นเท่าตัว
+          disableFlip: true,
+          experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+          // สแกนเกือบทั้งเฟรม ไม่ต้องจัด QR ให้ตรงกรอบเล็ก ๆ
+          qrbox: (w, h) => {
+            const side = Math.max(120, Math.floor(Math.min(w, h) * 0.92));
+            return { width: side, height: side };
+          },
+        };
+        // ลองขอภาพ Full HD ก่อน (ไม่บังคับสัดส่วน 1:1 ซึ่งทำให้ได้ภาพความละเอียดต่ำ)
+        const tries = [
+          {
+            ...base,
+            videoConstraints: {
+              facingMode: "environment",
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
+            },
+          },
+          { ...base },
+        ];
+
+        let lastErr = null;
+        for (const cfg of tries) {
+          const inst = new Html5Qrcode("reader");
+          scanner = inst;
+          try {
+            await inst.start(
+              { facingMode: "environment" },
+              cfg,
+              onScanSuccess,
+              () => {},
+            );
+            await setupCameraControls();
+            return;
+          } catch (err) {
+            lastErr = err;
+            scanner = null;
+            try {
+              await inst.clear();
+            } catch (_) {}
+            if (
+              /NotAllowed|Permission|denied|Security/i.test(
+                String((err && (err.name || err.message)) || err),
+              )
+            )
+              break;
+          }
+        }
+        throw lastErr || new Error("เปิดกล้องไม่ได้");
+      }
+
       async function startScanner() {
         if (scannerState !== "idle") return;
         scannerState = "starting";
@@ -935,8 +1154,6 @@
         document.getElementById("camBox").classList.add("show");
 
         try {
-          await waitForQrLibrary();
-
           if (
             !window.isSecureContext ||
             !navigator.mediaDevices ||
@@ -945,46 +1162,23 @@
             throw new Error("NO_MEDIA");
           }
 
-          scanner = new Html5Qrcode("reader");
-
-          try {
-            await scanner.start(
-              {
-                // html5-qrcode รับ cameraIdOrConfig แบบ object ได้เพียง 1 key
-                facingMode: "environment",
-              },
-              {
-                fps: 15,
-                formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
-                qrbox: (w, h) => {
-                  const s = Math.max(
-                    260,
-                    Math.min(520, Math.floor(Math.min(w, h) * 0.94)),
-                  );
-                  return { width: s, height: s };
-                },
-                aspectRatio: 1,
-                disableFlip: false,
-                experimentalFeatures: { useBarCodeDetectorIfSupported: true },
-              },
-              onScanSuccess,
-              () => {},
-            );
-
+          const detector = await getNativeDetector();
+          if (detector) {
+            await startNative(detector);
             await setupCameraControls();
-          } catch (firstErr) {
-            // ไม่เรียก scanner.start() ซ้ำระหว่าง transition
-            throw firstErr;
+          } else {
+            await waitForQrLibrary();
+            await startLibrary();
           }
 
           scannerState = "running";
           showStatus(
             "success",
             "พร้อมสแกน",
-            "หันกล้องไปที่ QR Code ของครุภัณฑ์",
+            "หันกล้องไปที่ QR Code ของครุภัณฑ์ (ถือห่างประมาณ 15–25 ซม. ให้ QR เห็นชัด)",
           );
         } catch (error) {
-          // start() ล้มเหลวระหว่าง transition: clear อย่างเดียว ห้าม stop() ซ้ำ
+          stopNative();
           resetCameraControls();
           const failed = scanner;
           scanner = null;
@@ -1036,6 +1230,7 @@
 
       async function destroyScanner() {
         resetCameraControls();
+        stopNative();
         const old = scanner;
         scanner = null;
         scannerState = "idle";
@@ -1059,12 +1254,15 @@
       }
 
       function onScanSuccess(decodedText) {
-        const code = String(decodedText || "").trim();
+        const code = fixText(decodedText);
         const now = Date.now();
         if (!code || processing) return;
         if (code === lastCode && now - lastScanTime < 3000) return;
         lastCode = code;
         lastScanTime = now;
+        try {
+          if (navigator.vibrate) navigator.vibrate(60);
+        } catch (_) {}
         processCode(code);
       }
 
@@ -1086,27 +1284,91 @@
         showStatus("success", "กำลังตรวจสอบ...", "รหัส " + escapeHtml(code));
         clearDetails();
 
-        const callbackName =
-          "stockCb_" + Date.now() + "_" + Math.floor(Math.random() * 100000);
-        const script = document.createElement("script");
+        const MAX_ATTEMPTS = 3; // ส่งครั้งแรก + ลองใหม่อัตโนมัติ 2 ครั้ง
+        const ATTEMPT_TIMEOUT_MS = 12000;
+        const startedAt = Date.now();
+        const pending = []; // { name, script }
         let finished = false;
+        let attempts = 0;
+        let retryTimer = null;
 
         function cleanup() {
-          clearInterval(timer);
+          clearInterval(ticker);
+          clearTimeout(retryTimer);
           processing = false;
           document.body.classList.remove("loading");
-          try {
-            delete window[callbackName];
-          } catch (_) {
-            window[callbackName] = undefined;
-          }
-          script.remove();
+          pending.forEach((p) => {
+            // เก็บ callback เป็น no-op ไว้ เผื่อคำตอบเก่ามาถึงทีหลัง จะได้ไม่ error
+            window[p.name] = function () {};
+            p.script.remove();
+          });
         }
 
-        // ไม่จำกัดเวลา: รอจนกว่า Apps Script จะค้นในชีตและตอบกลับ
+        function fail() {
+          if (finished) return;
+          finished = true;
+          cleanup();
+          showStatus(
+            "error",
+            "เชื่อมต่อ Apps Script ไม่สำเร็จ",
+            "ลองแล้ว " +
+              MAX_ATTEMPTS +
+              " ครั้งแต่ไม่มีคำตอบ ตรวจสอบอินเทอร์เน็ต/ลองเปิดด้วย Chrome แล้วสแกนใหม่ (หรือกรอกรหัสด้วยตนเอง)",
+          );
+        }
+
+        function scheduleNext() {
+          clearTimeout(retryTimer);
+          retryTimer = setTimeout(() => {
+            if (finished) return;
+            if (attempts >= MAX_ATTEMPTS) return fail();
+            sendAttempt();
+          }, ATTEMPT_TIMEOUT_MS);
+        }
+
+        function sendAttempt() {
+          attempts++;
+          const name =
+            "stockCb_" +
+            Date.now() +
+            "_" +
+            attempts +
+            "_" +
+            Math.floor(Math.random() * 100000);
+          const script = document.createElement("script");
+          pending.push({ name, script });
+
+          window[name] = function (result) {
+            if (finished) return;
+            finished = true;
+            const retried = attempts > 1;
+            cleanup();
+            handleResult(result, retried);
+          };
+
+          // ถ้าโหลดสคริปต์ล้มเหลวทันที (เครือข่ายหลุด) ให้ลองใหม่ทันทีไม่ต้องรอครบ 12 วินาที
+          script.onerror = function () {
+            if (finished) return;
+            if (attempts >= MAX_ATTEMPTS) return fail();
+            clearTimeout(retryTimer);
+            retryTimer = setTimeout(sendAttempt, 800);
+          };
+
+          script.async = true;
+          script.src =
+            API_URL +
+            "?action=markAsCounted" +
+            "&code=" +
+            encodeURIComponent(code) +
+            "&callback=" +
+            encodeURIComponent(name);
+          document.body.appendChild(script);
+
+          scheduleNext();
+        }
+
         // แสดงจำนวนวินาทีที่รอ เพื่อให้รู้ว่าระบบยังทำงานอยู่
-        const startedAt = Date.now();
-        const timer = setInterval(() => {
+        const ticker = setInterval(() => {
           if (finished) return;
           const sec = Math.floor((Date.now() - startedAt) / 1000);
           if (sec >= 3) {
@@ -1117,38 +1379,13 @@
                 escapeHtml(code) +
                 "<br>กำลังรอผลจากชีต... " +
                 sec +
-                " วินาที",
+                " วินาที" +
+                (attempts > 1 ? " (ส่งซ้ำอัตโนมัติ ครั้งที่ " + attempts + ")" : ""),
             );
           }
         }, 1000);
 
-        window[callbackName] = function (result) {
-          if (finished) return;
-          finished = true;
-          cleanup();
-          handleResult(result);
-        };
-
-        script.onerror = function () {
-          if (finished) return;
-          finished = true;
-          cleanup();
-          showStatus(
-            "error",
-            "เชื่อมต่อ Apps Script ไม่สำเร็จ",
-            "ตรวจสอบว่า Web App ถูก Deploy เป็น “Anyone” และ URL ถูกต้อง (และ Deploy เวอร์ชันใหม่หลังแก้ Code.gs แล้ว)",
-          );
-        };
-
-        script.src =
-          API_URL +
-          "?action=markAsCounted" +
-          "&code=" +
-          encodeURIComponent(code) +
-          "&callback=" +
-          encodeURIComponent(callbackName);
-        script.async = true;
-        document.body.appendChild(script);
+        sendAttempt();
 
         // ส่งคำขอไปก่อน แล้วค่อยปิดกล้องพร้อมกัน (ไม่ต้องรอปิดกล้องเสร็จ)
         if (scannerState === "running") stopScanner();
@@ -1177,7 +1414,7 @@
       }
       window.addEventListener("load", () => setTimeout(warmUp, 300));
 
-      function handleResult(result) {
+      function handleResult(result, retried) {
         if (!result) {
           showStatus(
             "error",
@@ -1233,7 +1470,11 @@
           showStatus(
             "warning",
             "รายการนี้นับแล้ว",
-            "นับเมื่อ " + escapeHtml(result.asset?.countedAt || "-"),
+            "นับเมื่อ " +
+              escapeHtml(result.asset?.countedAt || "-") +
+              (retried
+                ? "<br><small>(ระบบส่งซ้ำอัตโนมัติ รายการนี้อาจเพิ่งถูกบันทึกจากการส่งครั้งแรก)</small>"
+                : ""),
           );
           renderDetails(result.asset);
           return;
