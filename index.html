@@ -285,6 +285,25 @@
       #reader {
         touch-action: none;
       }
+      .diag-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        margin-top: 6px;
+        font-size: 12px;
+        color: #98a2b3;
+      }
+      .engine-btn {
+        flex: none;
+        padding: 4px 10px;
+        font-size: 12px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: #fff;
+        color: var(--muted);
+        cursor: pointer;
+      }
       .focus-ring {
         position: absolute;
         width: 64px;
@@ -423,6 +442,12 @@
           <div class="cam" id="camBox">
             <div id="reader"></div>
             <div id="focusRing" class="focus-ring"></div>
+            <div class="diag-row">
+              <span id="diag"></span>
+              <button id="engineBtn" class="engine-btn" type="button">
+                สลับตัวอ่าน
+              </button>
+            </div>
           </div>
           <div id="camTools" class="cam-tools">
             <button
@@ -838,6 +863,31 @@
         return new File([blob], "qr-padded.png", { type: "image/png" });
       }
 
+      async function jsqrDecodeFile(file) {
+        const img = await loadImage(file);
+        const w0 = img.naturalWidth;
+        const h0 = img.naturalHeight;
+        for (const maxSide of [1600, 1000, 700]) {
+          const scale = Math.min(1, maxSide / Math.max(w0, h0));
+          const w = Math.round(w0 * scale);
+          const h = Math.round(h0 * scale);
+          const pad = Math.round(Math.max(w, h) * 0.1);
+          const cw = w + pad * 2;
+          const ch = h + pad * 2;
+          const c = document.createElement("canvas");
+          c.width = cw;
+          c.height = ch;
+          const ctx = c.getContext("2d", { willReadFrequently: true });
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, cw, ch);
+          ctx.drawImage(img, pad, pad, w, h);
+          const data = ctx.getImageData(0, 0, cw, ch);
+          const text = jsqrDecodeImageData(data, cw, ch, true);
+          if (text) return text;
+        }
+        return "";
+      }
+
       async function decodeQrFromFile(file) {
         // 1) ลองตัวอ่านของเครื่องก่อน (แม่นกว่า) 2) ถ้าไม่ติดค่อยใช้ไลบรารี
         const det = await getNativeDetector();
@@ -851,6 +901,13 @@
             } finally {
               if (bmp.close) bmp.close();
             }
+          } catch (_) {}
+        }
+        // ตัวอ่าน jsQR: ลองหลายขนาด + เติมขอบขาว (QR บนป้ายมักมีขอบขาวแคบ)
+        if (await loadJsQR()) {
+          try {
+            const text = await jsqrDecodeFile(file);
+            if (text) return text;
           } catch (_) {}
         }
         if (typeof Html5Qrcode === "undefined") throw new Error("EMPTY");
@@ -897,7 +954,7 @@
           try {
             await waitForQrLibrary();
           } catch (e) {
-            if (!(await getNativeDetector())) throw e;
+            if (!(await getNativeDetector()) && !(await loadJsQR())) throw e;
           }
           const text = fixText(await decodeQrFromFile(file));
           if (!text) throw new Error("EMPTY");
@@ -953,6 +1010,42 @@
       let nativeRunning = false;
       let nativeFailCount = 0;
       let nativeDisabled = false; // ถ้า native ใช้ไม่ได้ ให้ไปใช้ไลบรารีแทน
+      const APP_VERSION = "v4";
+      let availableEngines = [];
+      let preferredEngine = null; // null = เลือกอัตโนมัติ
+      let currentEngine = "";
+      const ENGINE_LABEL = {
+        native: "ตัวอ่านของเครื่อง",
+        jsqr: "jsQR",
+        library: "ZXing (สำรอง)",
+      };
+      const diagEl = document.getElementById("diag");
+      const engineBtn = document.getElementById("engineBtn");
+
+      setInterval(() => {
+        if (scannerState !== "running") {
+          diagEl.textContent = "";
+          return;
+        }
+        const v = document.querySelector("#reader video");
+        const res = v && v.videoWidth ? v.videoWidth + "×" + v.videoHeight : "-";
+        diagEl.textContent =
+          APP_VERSION +
+          " · " +
+          (ENGINE_LABEL[currentEngine] || "") +
+          " · กล้อง " +
+          res +
+          (currentEngine === "library" ? "" : " · ลอง " + diagFrames + " เฟรม");
+      }, 500);
+
+      engineBtn.addEventListener("click", async () => {
+        if (scannerState !== "running") return;
+        const list = availableEngines.length ? availableEngines : [currentEngine];
+        const next = list[(list.indexOf(currentEngine) + 1) % list.length];
+        preferredEngine = next;
+        await stopScanner();
+        startScanner();
+      });
 
       async function getNativeDetector() {
         if (nativeDisabled || !("BarcodeDetector" in window)) return null;
@@ -1004,9 +1097,9 @@
         nativeVideo = null;
       }
 
-      async function startNative(detector) {
+      // เปิดกล้องเอง (ภาพ Full HD) ใช้ร่วมกันทั้งตัวอ่านของเครื่องและ jsQR
+      async function startOwnCamera() {
         nativeFailCount = 0;
-        // ขอภาพความละเอียดสูง (Full HD) ถ้าไม่ได้ค่อยลดลง
         const attempts = [
           {
             facingMode: { ideal: "environment" },
@@ -1035,6 +1128,7 @@
 
         const video = document.createElement("video");
         video.setAttribute("playsinline", "");
+        video.setAttribute("webkit-playsinline", "");
         video.setAttribute("muted", "");
         video.muted = true;
         video.autoplay = true;
@@ -1047,9 +1141,144 @@
 
         nativeStream = stream;
         nativeVideo = video;
+      }
+
+      async function startNative(detector) {
+        await startOwnCamera();
         nativeDetector = detector;
         nativeRunning = true;
         nativeLoop();
+      }
+
+      // ===== ตัวอ่าน jsQR (ใช้บน iPhone/เบราว์เซอร์ที่ไม่มี BarcodeDetector) =====
+      const JSQR_URLS = [
+        "https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js",
+        "https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js",
+      ];
+      let jsqrPromise = null;
+
+      function loadScriptOnce(src, ms) {
+        return new Promise((resolve, reject) => {
+          const el = document.createElement("script");
+          const t = setTimeout(() => {
+            el.remove();
+            reject(new Error("timeout"));
+          }, ms);
+          el.src = src;
+          el.async = true;
+          el.onload = () => {
+            clearTimeout(t);
+            resolve();
+          };
+          el.onerror = () => {
+            clearTimeout(t);
+            el.remove();
+            reject(new Error("load error"));
+          };
+          document.head.appendChild(el);
+        });
+      }
+
+      function loadJsQR() {
+        if (typeof jsQR === "function") return Promise.resolve(true);
+        if (jsqrPromise) return jsqrPromise;
+        jsqrPromise = (async () => {
+          for (const u of JSQR_URLS) {
+            try {
+              await loadScriptOnce(u, 8000);
+              if (typeof jsQR === "function") return true;
+            } catch (_) {}
+          }
+          jsqrPromise = null; // ให้ลองใหม่ได้ครั้งหน้า
+          return false;
+        })();
+        return jsqrPromise;
+      }
+      window.addEventListener("load", () => setTimeout(loadJsQR, 600));
+
+      const jsqrCanvas = document.createElement("canvas");
+      const jsqrCtx = jsqrCanvas.getContext("2d", { willReadFrequently: true });
+      const gammaLuts = {};
+      let diagFrames = 0;
+
+      function applyGamma(data, g) {
+        let lut = gammaLuts[g];
+        if (!lut) {
+          lut = new Uint8ClampedArray(256);
+          for (let i = 0; i < 256; i++) lut[i] = 255 * Math.pow(i / 255, g);
+          gammaLuts[g] = lut;
+        }
+        for (let i = 0; i < data.length; i += 4) {
+          data[i] = lut[data[i]];
+          data[i + 1] = lut[data[i + 1]];
+          data[i + 2] = lut[data[i + 2]];
+        }
+      }
+
+      function jsqrText(r) {
+        if (!r) return "";
+        if (r.data) return r.data;
+        try {
+          if (r.binaryData && r.binaryData.length)
+            return new TextDecoder("utf-8").decode(Uint8Array.from(r.binaryData));
+        } catch (_) {}
+        return "";
+      }
+
+      // ถอดจาก canvas/ภาพที่วาดไว้แล้ว ลองหลายแบบ (ปกติ / ปรับความสว่าง 2 แบบ)
+      function jsqrDecodeImageData(img, w, h, withGamma) {
+        let r = jsQR(img.data, w, h, { inversionAttempts: "dontInvert" });
+        if (r && jsqrText(r)) return jsqrText(r);
+        if (withGamma) {
+          for (const g of [1.5, 0.7]) {
+            const copy = new Uint8ClampedArray(img.data);
+            applyGamma(copy, g);
+            r = jsQR(copy, w, h, { inversionAttempts: "dontInvert" });
+            if (r && jsqrText(r)) return jsqrText(r);
+          }
+        }
+        return "";
+      }
+
+      let jsqrPass = 0;
+      function jsqrDecodeVideo(video) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (!vw || !vh) return "";
+        // สลับ: กลางภาพ 70% (ละเอียดกว่า) / ทั้งเฟรม (กันกรณี QR ไม่อยู่กลาง)
+        const full = jsqrPass++ % 3 === 2;
+        const frac = full ? 1 : 0.7;
+        const sw = Math.round(vw * frac);
+        const sh = Math.round(vh * frac);
+        const sx = Math.round((vw - sw) / 2);
+        const sy = Math.round((vh - sh) / 2);
+        const scale = Math.min(1, 1200 / Math.max(sw, sh));
+        const cw = Math.round(sw * scale);
+        const ch = Math.round(sh * scale);
+        if (jsqrCanvas.width !== cw) jsqrCanvas.width = cw;
+        if (jsqrCanvas.height !== ch) jsqrCanvas.height = ch;
+        jsqrCtx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
+        const img = jsqrCtx.getImageData(0, 0, cw, ch);
+        return jsqrDecodeImageData(img, cw, ch, !full);
+      }
+
+      async function startJsqr() {
+        await startOwnCamera();
+        nativeRunning = true;
+        jsqrLoop();
+      }
+
+      function jsqrLoop() {
+        if (!nativeRunning) return;
+        try {
+          const v = nativeVideo;
+          if (v && v.readyState >= 2 && v.videoWidth > 0 && !processing) {
+            diagFrames++;
+            const text = jsqrDecodeVideo(v);
+            if (text) onScanSuccess(text);
+          }
+        } catch (_) {}
+        if (nativeRunning) nativeTimer = setTimeout(jsqrLoop, 40);
       }
 
       async function nativeLoop() {
@@ -1057,6 +1286,7 @@
         try {
           const v = nativeVideo;
           if (v && v.readyState >= 2 && v.videoWidth > 0 && !processing) {
+            diagFrames++;
             const codes = await nativeDetector.detect(v);
             nativeFailCount = 0;
             if (codes && codes.length) {
@@ -1163,19 +1393,34 @@
           }
 
           const detector = await getNativeDetector();
-          if (detector) {
+          // ไม่ต้องรอโหลด jsQR ถ้ามีตัวอ่านของเครื่องอยู่แล้ว
+          const jsqrOk = detector ? typeof jsQR === "function" : await loadJsQR();
+          availableEngines = [];
+          if (detector) availableEngines.push("native");
+          if (jsqrOk) availableEngines.push("jsqr");
+          availableEngines.push("library");
+          const engine =
+            preferredEngine && availableEngines.includes(preferredEngine)
+              ? preferredEngine
+              : availableEngines[0];
+
+          diagFrames = 0;
+          if (engine === "native") {
             await startNative(detector);
+            await setupCameraControls();
+          } else if (engine === "jsqr") {
+            await startJsqr();
             await setupCameraControls();
           } else {
             await waitForQrLibrary();
             await startLibrary();
           }
+          currentEngine = engine;
 
           scannerState = "running";
           showStatus(
             "success",
             "พร้อมสแกน",
-            "หันกล้องไปที่ QR Code ของครุภัณฑ์ (ถือห่างประมาณ 15–25 ซม. ให้ QR เห็นชัด)",
           );
         } catch (error) {
           stopNative();
@@ -1575,7 +1820,6 @@
         showStatus(
           "warning",
           "แนะนำให้เปิดด้วย Chrome/Safari",
-          "เบราว์เซอร์ในแอป (เช่น LINE) มักเปิดกล้องสดไม่ได้ หากเปิดไม่ได้ให้เปิดลิงก์นี้ด้วย Chrome/Safari แทน",
         );
       }
     </script>
