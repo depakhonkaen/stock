@@ -17,7 +17,10 @@
       rel="stylesheet"
       href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"
     />
-    <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+    <link rel="preconnect" href="https://script.google.com" />
+    <link rel="preconnect" href="https://script.googleusercontent.com" crossorigin />
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
+    <script defer src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
     <style>
       :root {
         --navy: #0c2f53;
@@ -925,6 +928,7 @@
       async function startScanner() {
         if (scannerState !== "idle") return;
         scannerState = "starting";
+        warmUp();
         setScannerButtons();
         clearDetails();
         clearPreview();
@@ -1079,8 +1083,6 @@
         processing = true;
         document.body.classList.add("loading");
 
-        if (scannerState === "running") await stopScanner();
-
         showStatus("success", "กำลังตรวจสอบ...", "รหัส " + escapeHtml(code));
         clearDetails();
 
@@ -1145,8 +1147,35 @@
           encodeURIComponent(code) +
           "&callback=" +
           encodeURIComponent(callbackName);
+        script.async = true;
         document.body.appendChild(script);
+
+        // ส่งคำขอไปก่อน แล้วค่อยปิดกล้องพร้อมกัน (ไม่ต้องรอปิดกล้องเสร็จ)
+        if (scannerState === "running") stopScanner();
       }
+
+      // ปลุก Apps Script ล่วงหน้า ลดอาการช้าในการสแกนครั้งแรก (cold start)
+      let lastWarmAt = 0;
+      function warmUp() {
+        if (Date.now() - lastWarmAt < 3 * 60 * 1000) return;
+        lastWarmAt = Date.now();
+        const cb = "warmCb_" + Date.now();
+        const s = document.createElement("script");
+        const done = () => {
+          try {
+            delete window[cb];
+          } catch (_) {
+            window[cb] = undefined;
+          }
+          s.remove();
+        };
+        window[cb] = done;
+        s.onerror = done;
+        s.async = true;
+        s.src = API_URL + "?action=ping&callback=" + encodeURIComponent(cb);
+        document.body.appendChild(s);
+      }
+      window.addEventListener("load", () => setTimeout(warmUp, 300));
 
       function handleResult(result) {
         if (!result) {
