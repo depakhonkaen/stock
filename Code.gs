@@ -52,7 +52,7 @@ function doGet(e) {
 
   try {
     if (action === 'markAsCounted') {
-      result = markAsCounted(params.code || '', params.rid || '');
+      result = markAsCounted(params.code || '');
     } else if (action === 'ping') {
       result = ping_();
     } else {
@@ -141,62 +141,30 @@ function normCode_(value) {
     .toLowerCase();
 }
 
-// ---------- ดัชนีรหัส (รหัสที่ทำให้เป็นมาตรฐานแล้ว -> ชีต/แถว) ----------
-// เดิมทุกครั้งที่สแกนจะ normalize รหัสของ "ทุกแถว" ซึ่งรหัสภาษาไทยช้ากว่า ASCII มาก
-// ตอนนี้อ่านเฉพาะคอลัมน์ B แล้วสร้างดัชนีครั้งเดียวต่อ instance
-// สแกนครั้งต่อ ๆ ไปจึงเป็นการ lookup ทันที + อ่านแถวที่เจอแถวเดียว
-function buildIndex_(ctx) {
-  const map = Object.create(null);
+// อ่านข้อมูลทั้งชีตครั้งเดียว (คอลัมน์ A-I) แล้วค้นในหน่วยความจำ
+// เร็วกว่า TextFinder + อ่านแถวซ้ำอีกรอบ
+function findAsset_(sheets, code) {
+  const target = normCode_(code);
   let hasData = false;
 
-  for (let i = 0; i < ctx.sheets.length; i++) {
-    const sh = ctx.sheets[i];
+  for (let i = 0; i < sheets.length; i++) {
+    const sh = sheets[i];
     const lastRow = sh.getLastRow();
     if (lastRow < 2) continue;
     hasData = true;
 
-    const col = sh.getRange(2, 2, lastRow - 1, 1).getValues();
-    for (let r = 0; r < col.length; r++) {
-      const key = normCode_(col[r][0]);
-      if (key && !(key in map)) map[key] = { s: i, r: r + 2 }; // เจอก่อนใช้ก่อน เหมือนเดิม
-    }
-  }
-
-  ctx.index = { map: map, hasData: hasData };
-  return { map: map, hasData: hasData, justBuilt: true };
-}
-
-function getIndex_(ctx, force) {
-  if (!force && ctx.index) {
-    return { map: ctx.index.map, hasData: ctx.index.hasData, justBuilt: false };
-  }
-  return buildIndex_(ctx);
-}
-
-function findAsset_(ctx, code) {
-  const target = normCode_(code);
-  let hasData = false;
-
-  for (let pass = 0; pass < 2; pass++) {
-    const idx = getIndex_(ctx, pass === 1); // รอบสอง = สร้างดัชนีใหม่ (กรณีมีแถวใหม่/แก้รหัสในชีต)
-    hasData = idx.hasData;
-
-    const hit = idx.map[target];
-    if (hit) {
-      const sh = ctx.sheets[hit.s];
-      const values = sh.getRange(hit.r, 1, 1, 9).getValues()[0];
-      // ยืนยันว่าแถวนั้นยังเป็นรหัสเดิมจริง (กันดัชนีเก่า)
-      if (normCode_(values[1]) === target) {
-        return { hasData: true, sheet: sh, row: hit.r, values: values };
+    const data = sh.getRange(2, 1, lastRow - 1, 9).getValues();
+    for (let r = 0; r < data.length; r++) {
+      if (normCode_(data[r][1]) === target) {
+        return { hasData: true, sheet: sh, row: r + 2, values: data[r] };
       }
     }
-    if (idx.justBuilt) break; // เพิ่งสร้างใหม่แล้วไม่เจอ = ไม่มีจริง
   }
 
   return { hasData: hasData, sheet: null, row: 0, values: null };
 }
 
-function markAsCounted(rawCode, rid) {
+function markAsCounted(rawCode) {
   const code = String(rawCode || '').trim();
 
   if (!code) {
@@ -221,18 +189,8 @@ function markAsCounted(rawCode, rid) {
   }
 
   try {
-    // ถ้าเป็นคำขอซ้ำ (หน้าเว็บส่งซ้ำอัตโนมัติเพราะรอนาน) ให้ตอบผลเดิม
-    // ไม่ใช่ "นับแล้ว" ทั้งที่เพิ่งนับสำเร็จจากคำขอแรก
-    const ridKey = rid ? 'rid_' + String(rid).slice(0, 80) : '';
-    if (ridKey) {
-      try {
-        const prev = CacheService.getScriptCache().get(ridKey);
-        if (prev) return JSON.parse(prev);
-      } catch (_) {}
-    }
-
     const ctx = getCtx_();
-    const found = findAsset_(ctx, code);
+    const found = findAsset_(ctx.sheets, code);
 
     if (!found.hasData) {
       return {
@@ -288,18 +246,12 @@ function markAsCounted(rawCode, rid) {
 
     // ไม่ต้อง flush(): ข้อมูลถูกบันทึกเมื่อจบการทำงานอยู่แล้ว
 
-    const done = {
+    return {
       ok: true,
       type: 'COUNTED',
       message: 'นับรายการเรียบร้อย',
       asset: serializeAsset_(asset, ctx.timezone)
     };
-    if (ridKey) {
-      try {
-        CacheService.getScriptCache().put(ridKey, JSON.stringify(done), 600);
-      } catch (_) {}
-    }
-    return done;
   } finally {
     lock.releaseLock();
   }
@@ -325,7 +277,6 @@ function serializeAsset_(asset, timezone) {
 
 function ping_() {
   const ctx = getCtx_();
-  getIndex_(ctx, false); // อุ่นดัชนีไว้ล่วงหน้า สแกนจริงจะได้ไม่ต้องรอ
 
   return {
     ok: true,

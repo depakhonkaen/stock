@@ -1532,9 +1532,6 @@
         const MAX_ATTEMPTS = 3; // ส่งครั้งแรก + ลองใหม่อัตโนมัติ 2 ครั้ง
         const ATTEMPT_TIMEOUT_MS = 12000;
         const startedAt = Date.now();
-        // รหัสคำขอเดียวกันทุกครั้งที่ส่งซ้ำ ให้เซิร์ฟเวอร์รู้ว่าเป็นการสแกนครั้งเดียวกัน
-        const rid =
-          Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
         const pending = []; // { name, script }
         let finished = false;
         let attempts = 0;
@@ -1608,8 +1605,6 @@
             "?action=markAsCounted" +
             "&code=" +
             encodeURIComponent(code) +
-            "&rid=" +
-            rid +
             "&callback=" +
             encodeURIComponent(name);
           document.body.appendChild(script);
