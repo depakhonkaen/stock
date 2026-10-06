@@ -93,6 +93,83 @@
         object-fit: cover;
         display: block;
       }
+      /* โหมดกล้องของเรา (ZXing / ของเครื่อง / jsQR): พรีวิวเต็มกรอบ 3:4 แบบแอปกล้อง */
+      #reader.own {
+        position: relative;
+        aspect-ratio: 3 / 4;
+        max-height: 72vh;
+        min-height: 0;
+        border-radius: 14px;
+      }
+      #reader.own video {
+        position: absolute;
+        inset: 0;
+        width: 100% !important;
+        height: 100% !important;
+        max-height: none !important;
+        object-fit: cover;
+      }
+      .vf-wrap {
+        position: relative;
+      }
+      .vf-corners {
+        position: absolute;
+        inset: 14% 12%;
+        pointer-events: none;
+      }
+      .vf-corners i {
+        position: absolute;
+        width: 28px;
+        height: 28px;
+        border: 3px solid rgba(255, 255, 255, 0.92);
+        border-radius: 5px;
+        filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.5));
+      }
+      .vf-corners i:nth-child(1) { left: 0; top: 0; border-right: 0; border-bottom: 0; }
+      .vf-corners i:nth-child(2) { right: 0; top: 0; border-left: 0; border-bottom: 0; }
+      .vf-corners i:nth-child(3) { left: 0; bottom: 0; border-right: 0; border-top: 0; }
+      .vf-corners i:nth-child(4) { right: 0; bottom: 0; border-left: 0; border-top: 0; }
+      .vf-hint {
+        position: absolute;
+        left: 50%;
+        bottom: 10px;
+        transform: translateX(-50%);
+        max-width: 94%;
+        padding: 5px 12px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font-size: 12.5px;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      #reader:not(.own) ~ .vf-corners,
+      #reader:not(.own) ~ .vf-hint,
+      #reader:not(.own) ~ .torch-btn {
+        display: none;
+      }
+      .torch-btn {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        display: none;
+        width: 42px;
+        min-height: 42px;
+        height: 42px;
+        padding: 0;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.5);
+        color: #fff;
+        font-size: 17px;
+        z-index: 6;
+      }
+      #reader.own ~ .torch-btn.show {
+        display: flex;
+      }
+      .torch-btn.on {
+        background: #fbbf24;
+        color: #111;
+      }
       #reader__scan_region {
         width: 100% !important;
       }
@@ -440,8 +517,20 @@
       <main>
         <section class="scanner-card">
           <div class="cam" id="camBox">
-            <div id="reader"></div>
-            <div id="focusRing" class="focus-ring"></div>
+            <div class="vf-wrap">
+              <div id="reader"></div>
+              <div class="vf-corners"><i></i><i></i><i></i><i></i></div>
+              <div id="focusRing" class="focus-ring"></div>
+              <button
+                id="torchBtn"
+                class="torch-btn"
+                type="button"
+                aria-label="เปิด/ปิดไฟฉาย"
+              >
+                <i class="fa-solid fa-bolt"></i>
+              </button>
+              <div class="vf-hint">ถือห่างราว 15–20 ซม. ให้เห็น QR ทั้งอัน</div>
+            </div>
             <div class="diag-row">
               <span id="diag"></span>
               <button id="engineBtn" class="engine-btn" type="button">
@@ -482,10 +571,14 @@
             <button id="stopBtn" class="secondary" type="button" disabled>
               <i class="fa-solid fa-stop"></i>หยุดสแกน
             </button>
+            <button id="camBtn" class="pick" type="button">
+              <i class="fa-solid fa-camera-retro"></i>ถ่ายด้วยกล้องของเครื่อง (ชัดที่สุด)
+            </button>
             <button id="pickBtn" class="pick" type="button">
               <i class="fa-solid fa-image"></i>เลือกรูป QR Code จากเครื่อง
             </button>
             <input id="fileInput" type="file" accept="image/*" />
+            <input id="camInput" type="file" accept="image/*" capture="environment" style="display: none" />
           </div>
           <div id="preview" class="preview">
             <img id="previewImg" alt="รูป QR Code ที่เลือก" />
@@ -577,6 +670,8 @@
       const zoomOutBtn = document.getElementById("zoomOut");
       const focusRing = document.getElementById("focusRing");
       const readerEl = document.getElementById("reader");
+      const torchBtn = document.getElementById("torchBtn");
+      let torchOn = false;
 
       let camTrack = null;
       let camCaps = null;
@@ -618,6 +713,8 @@
         zoomPending = null;
         pinchStartDist = 0;
         camTools.classList.remove("show");
+        torchBtn.classList.remove("show", "on");
+        torchOn = false;
         showCamNote("");
       }
 
@@ -636,6 +733,23 @@
             await tryConstraint({ focusMode: "continuous" });
           }
 
+          // ปรับแสง/สีให้อัตโนมัติต่อเนื่อง (ถ้ารองรับ) ช่วยให้ภาพบนป้ายมันไม่แสบ/มืดเกิน
+          if (
+            Array.isArray(camCaps.exposureMode) &&
+            camCaps.exposureMode.includes("continuous")
+          ) {
+            await tryConstraint({ exposureMode: "continuous" });
+          }
+          if (
+            Array.isArray(camCaps.whiteBalanceMode) &&
+            camCaps.whiteBalanceMode.includes("continuous")
+          ) {
+            await tryConstraint({ whiteBalanceMode: "continuous" });
+          }
+
+          // ไฟฉาย (Chrome บน Android ที่รองรับ)
+          if (camCaps.torch) torchBtn.classList.add("show");
+
           // ซูม (Chrome บน Android รองรับ / iPhone Safari ส่วนใหญ่ไม่รองรับ)
           if (camCaps.zoom && camCaps.zoom.max > camCaps.zoom.min) {
             const min = camCaps.zoom.min,
@@ -644,7 +758,8 @@
             zoomRange.max = max;
             zoomRange.step = camCaps.zoom.step || 0.1;
             camTools.classList.add("show");
-            await applyZoom(Math.min(max, Math.max(min, 1.5)));
+            // เริ่มที่ 1× ไม่ซูมล่วงหน้า (ซูมดิจิทัลทำให้ภาพเบลอ ให้ขยับเครื่องเข้าใกล้แทน)
+            await applyZoom(Math.min(max, Math.max(min, 1)));
           } else {
             showCamNote(
               "อุปกรณ์/เบราว์เซอร์นี้ไม่รองรับการซูมกล้องด้วยระบบ ให้ขยับเครื่องเข้าใกล้ QR Code แทน",
@@ -785,6 +900,15 @@
         { passive: true },
       );
 
+      torchBtn.addEventListener("click", async () => {
+        if (!camTrack) return;
+        const next = !torchOn;
+        if (await tryConstraint({ torch: next })) {
+          torchOn = next;
+          torchBtn.classList.toggle("on", next);
+        }
+      });
+
       zoomRange.addEventListener("input", () =>
         applyZoom(parseFloat(zoomRange.value)),
       );
@@ -903,6 +1027,13 @@
             }
           } catch (_) {}
         }
+        // ZXing-WASM (แม่นที่สุดสำหรับรูปถ่าย)
+        if (await loadZxing()) {
+          try {
+            const text = await zxingDecodeFile(file);
+            if (text) return text;
+          } catch (_) {}
+        }
         // ตัวอ่าน jsQR: ลองหลายขนาด + เติมขอบขาว (QR บนป้ายมักมีขอบขาวแคบ)
         if (await loadJsQR()) {
           try {
@@ -951,10 +1082,12 @@
         showStatus("success", "กำลังอ่าน QR Code จากรูป...", "");
 
         try {
-          try {
-            await waitForQrLibrary();
-          } catch (e) {
-            if (!(await getNativeDetector()) && !(await loadJsQR())) throw e;
+          if (!(await getNativeDetector()) && !(await loadZxing())) {
+            try {
+              await waitForQrLibrary();
+            } catch (e) {
+              if (!(await loadJsQR())) throw e;
+            }
           }
           const text = fixText(await decodeQrFromFile(file));
           if (!text) throw new Error("EMPTY");
@@ -975,6 +1108,16 @@
         handleImageFile(file);
       });
       previewClear.addEventListener("click", clearPreview);
+
+      // เปิดแอปกล้องของเครื่องโดยตรง (โฟกัส/HDR ของระบบ) แล้วอ่าน QR จากรูปที่ถ่าย
+      const camBtn = document.getElementById("camBtn");
+      const camInput = document.getElementById("camInput");
+      camBtn.addEventListener("click", () => camInput.click());
+      camInput.addEventListener("change", () => {
+        const file = camInput.files && camInput.files[0];
+        camInput.value = "";
+        handleImageFile(file);
+      });
 
       ["dragenter", "dragover"].forEach((type) =>
         scannerCard.addEventListener(type, (e) => {
@@ -1010,12 +1153,13 @@
       let nativeRunning = false;
       let nativeFailCount = 0;
       let nativeDisabled = false; // ถ้า native ใช้ไม่ได้ ให้ไปใช้ไลบรารีแทน
-      const APP_VERSION = "v4";
+      const APP_VERSION = "v5";
       let availableEngines = [];
       let preferredEngine = null; // null = เลือกอัตโนมัติ
       let currentEngine = "";
       const ENGINE_LABEL = {
         native: "ตัวอ่านของเครื่อง",
+        zxing: "ZXing-WASM",
         jsqr: "jsQR",
         library: "ZXing (สำรอง)",
       };
@@ -1095,6 +1239,7 @@
         }
         nativeStream = null;
         nativeVideo = null;
+        readerEl.classList.remove("own");
       }
 
       // เปิดกล้องเอง (ภาพ Full HD) ใช้ร่วมกันทั้งตัวอ่านของเครื่องและ jsQR
@@ -1134,6 +1279,7 @@
         video.autoplay = true;
         video.srcObject = stream;
         readerEl.innerHTML = "";
+        readerEl.classList.add("own");
         readerEl.appendChild(video);
         try {
           await video.play();
@@ -1148,6 +1294,184 @@
         nativeDetector = detector;
         nativeRunning = true;
         nativeLoop();
+      }
+
+      // ===== ตัวอ่าน ZXing-WASM (zxing-cpp) : ตัวหลักบน iPhone =====
+      // แม่นกว่า jsQR มาก อ่าน QR เบลอเล็กน้อย / ขอบขาวแคบ / ECC ต่ำ / ตัวอักษรไทย UTF-8 ได้
+      const ZX_VER = "3.1.5";
+      const ZX_BASES = [
+        "https://cdn.jsdelivr.net/npm/zxing-wasm@" + ZX_VER + "/dist/",
+        "https://fastly.jsdelivr.net/npm/zxing-wasm@" + ZX_VER + "/dist/",
+        "https://unpkg.com/zxing-wasm@" + ZX_VER + "/dist/",
+      ];
+      const ZX_OPTS = {
+        formats: ["QRCode"],
+        tryHarder: true,
+        tryRotate: false,
+        tryInvert: false,
+        tryDownscale: true,
+        maxNumberOfSymbols: 1,
+      };
+      let zxReady = false;
+      let zxDisabled = false;
+      let zxPromise = null;
+      let zxFail = 0;
+
+      function loadZxing() {
+        if (zxDisabled) return Promise.resolve(false);
+        if (zxReady) return Promise.resolve(true);
+        if (zxPromise) return zxPromise;
+        zxPromise = (async () => {
+          for (const base of ZX_BASES) {
+            try {
+              if (typeof ZXingWASM === "undefined")
+                await loadScriptOnce(base + "iife/reader/index.js", 10000);
+              if (typeof ZXingWASM === "undefined") continue;
+              const ctl = new AbortController();
+              const timer = setTimeout(() => ctl.abort(), 25000);
+              let buf;
+              try {
+                const res = await fetch(base + "reader/zxing_reader.wasm", {
+                  signal: ctl.signal,
+                });
+                if (!res.ok) throw new Error("wasm " + res.status);
+                buf = await res.arrayBuffer();
+              } finally {
+                clearTimeout(timer);
+              }
+              await ZXingWASM.prepareZXingModule({
+                overrides: { wasmBinary: buf },
+                fireImmediately: true,
+              });
+              zxReady = true;
+              return true;
+            } catch (_) {}
+          }
+          zxPromise = null; // ให้ลองใหม่ได้ครั้งหน้า
+          return false;
+        })();
+        return zxPromise;
+      }
+      window.addEventListener("load", () => setTimeout(loadZxing, 300));
+
+      // พื้นที่ของเฟรมวิดีโอที่ผู้ใช้เห็นจริงบนจอ (object-fit: cover ตัดขอบ)
+      function visibleRect(video) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const cw = video.clientWidth || vw;
+        const ch = video.clientHeight || vh;
+        const k = Math.max(cw / vw, ch / vh);
+        const w = Math.min(vw, cw / k);
+        const h = Math.min(vh, ch / k);
+        return { x: (vw - w) / 2, y: (vh - h) / 2, w: w, h: h };
+      }
+
+      const zxCanvas = document.createElement("canvas");
+      const zxCtx = zxCanvas.getContext("2d", { willReadFrequently: true });
+      let zxPass = 0;
+
+      // สลับ 3 แบบ: พื้นที่ที่เห็น / ตรงกลางแบบละเอียดเต็มความละเอียดกล้อง / ทั้งเฟรม
+      function zxGrab(video) {
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        if (!vw || !vh) return null;
+        const vis = visibleRect(video);
+        const mode = zxPass++ % 3;
+        let sx = vis.x,
+          sy = vis.y,
+          sw = vis.w,
+          sh = vis.h;
+        if (mode === 1) {
+          sw = vis.w * 0.55;
+          sh = vis.h * 0.55;
+          sx = vis.x + (vis.w - sw) / 2;
+          sy = vis.y + (vis.h - sh) / 2;
+        } else if (mode === 2) {
+          sx = 0;
+          sy = 0;
+          sw = vw;
+          sh = vh;
+        }
+        const scale = Math.min(1, 1280 / Math.max(sw, sh));
+        const cw = Math.max(1, Math.round(sw * scale));
+        const ch = Math.max(1, Math.round(sh * scale));
+        if (zxCanvas.width !== cw) zxCanvas.width = cw;
+        if (zxCanvas.height !== ch) zxCanvas.height = ch;
+        zxCtx.drawImage(video, sx, sy, sw, sh, 0, 0, cw, ch);
+        return zxCtx.getImageData(0, 0, cw, ch);
+      }
+
+      function zxPick(results) {
+        const hit = (results || []).find((r) => r.isValid !== false && r.text);
+        return hit ? hit.text : "";
+      }
+
+      async function startZxing() {
+        zxFail = 0;
+        await startOwnCamera();
+        nativeRunning = true;
+        zxingLoop();
+      }
+
+      async function zxingLoop() {
+        if (!nativeRunning) return;
+        try {
+          const v = nativeVideo;
+          if (v && v.readyState >= 2 && v.videoWidth > 0 && !processing) {
+            diagFrames++;
+            const img = zxGrab(v);
+            if (img) {
+              const text = zxPick(await ZXingWASM.readBarcodes(img, ZX_OPTS));
+              zxFail = 0;
+              if (text && nativeRunning) onScanSuccess(text);
+            }
+          }
+        } catch (_) {
+          zxFail++;
+          if (zxFail >= 8) {
+            // ZXing ใช้ไม่ได้ ตัดไปใช้ตัวอ่านถัดไป
+            nativeRunning = false;
+            zxDisabled = true;
+            await destroyScanner();
+            showStatus(
+              "warning",
+              "สลับไปใช้ตัวอ่านสำรอง",
+              "ตัวอ่านหลักใช้ไม่ได้ กำลังเปิดกล้องใหม่",
+            );
+            startScanner();
+            return;
+          }
+        }
+        if (nativeRunning) nativeTimer = setTimeout(zxingLoop, 30);
+      }
+
+      async function zxingDecodeFile(file) {
+        const img = await loadImage(file);
+        const w0 = img.naturalWidth;
+        const h0 = img.naturalHeight;
+        // ลองหลายขนาด + เติมขอบขาว (QR บนป้ายมักมีขอบขาวแคบ)
+        for (const [maxSide, padFrac] of [
+          [1600, 0],
+          [1000, 0.1],
+          [2400, 0],
+          [700, 0.1],
+        ]) {
+          const scale = Math.min(1, maxSide / Math.max(w0, h0));
+          const w = Math.round(w0 * scale);
+          const h = Math.round(h0 * scale);
+          const pad = Math.round(Math.max(w, h) * padFrac);
+          const c = document.createElement("canvas");
+          c.width = w + pad * 2;
+          c.height = h + pad * 2;
+          const ctx = c.getContext("2d", { willReadFrequently: true });
+          ctx.fillStyle = "#fff";
+          ctx.fillRect(0, 0, c.width, c.height);
+          ctx.drawImage(img, pad, pad, w, h);
+          const data = ctx.getImageData(0, 0, c.width, c.height);
+          const text = zxPick(await ZXingWASM.readBarcodes(data, ZX_OPTS));
+          if (text) return text;
+        }
+        return "";
       }
 
       // ===== ตัวอ่าน jsQR (ใช้บน iPhone/เบราว์เซอร์ที่ไม่มี BarcodeDetector) =====
@@ -1319,6 +1643,7 @@
 
       // ===== ตัวอ่านสำรอง (ไลบรารี html5-qrcode) สำหรับเบราว์เซอร์ที่ไม่มี BarcodeDetector เช่น iPhone =====
       async function startLibrary() {
+        readerEl.classList.remove("own");
         const base = {
           fps: 20,
           formatsToSupport: [Html5QrcodeSupportedFormats.QR_CODE],
@@ -1394,9 +1719,16 @@
 
           const detector = await getNativeDetector();
           // ไม่ต้องรอโหลด jsQR ถ้ามีตัวอ่านของเครื่องอยู่แล้ว
-          const jsqrOk = detector ? typeof jsQR === "function" : await loadJsQR();
+          // รอ ZXing ไม่เกิน 8 วินาที (โหลดล่วงหน้าตั้งแต่เปิดหน้าเว็บอยู่แล้ว)
+          const zxOk = await Promise.race([
+            loadZxing(),
+            new Promise((r) => setTimeout(() => r(false), 8000)),
+          ]);
+          const jsqrOk =
+            detector || zxOk ? typeof jsQR === "function" : await loadJsQR();
           availableEngines = [];
           if (detector) availableEngines.push("native");
+          if (zxOk) availableEngines.push("zxing");
           if (jsqrOk) availableEngines.push("jsqr");
           availableEngines.push("library");
           const engine =
@@ -1407,6 +1739,9 @@
           diagFrames = 0;
           if (engine === "native") {
             await startNative(detector);
+            await setupCameraControls();
+          } else if (engine === "zxing") {
+            await startZxing();
             await setupCameraControls();
           } else if (engine === "jsqr") {
             await startJsqr();
