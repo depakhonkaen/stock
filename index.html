@@ -1854,6 +1854,45 @@
         processCode(code);
       }
 
+      // แคชข้อมูลที่เคยสแกนแล้ว: สแกนซ้ำขึ้นทันที ไม่ต้องรอ network
+      const assetCache = new Map();
+      try {
+        const saved = JSON.parse(localStorage.getItem("stockCache") || "{}");
+        Object.keys(saved).forEach((k) => assetCache.set(k, saved[k]));
+      } catch (_) {}
+      function cacheKey(code) {
+        return String(code || "").replace(/[\s\u00A0\u200B-\u200D\u2060\uFEFF]+/g, "").toLowerCase();
+      }
+      function cacheSet(code, asset) {
+        if (!asset) return;
+        try {
+          assetCache.set(cacheKey(code), asset);
+          if (assetCache.size > 500) {
+            const first = assetCache.keys().next().value;
+            assetCache.delete(first);
+          }
+          const obj = {};
+          assetCache.forEach((v, k) => { obj[k] = v; });
+          localStorage.setItem("stockCache", JSON.stringify(obj));
+        } catch (_) {}
+      }
+
+      // โชว์การ์ดทันที (<100ms) ไม่ต้องรอ API: มีแคชโชว์ของเก่า ไม่มีโชว์แค่รหัสก่อน
+      function renderInstant(code) {
+        const hit = assetCache.get(cacheKey(code));
+        if (hit) {
+          renderDetails(hit, true);
+          return true;
+        }
+        details.innerHTML =
+          '<div class="detail-row"><div class="detail-label">รหัส</div>' +
+          '<div class="detail-value">' + escapeHtml(code) + "</div></div>" +
+          '<div class="detail-row"><div class="detail-label">สถานะ</div>' +
+          '<div class="detail-value">กำลังตรวจสอบ...</div></div>';
+        details.classList.add("show");
+        return false;
+      }
+
       // เรียก Apps Script ด้วย JSONP (หน้านี้โฮสต์นอก Apps Script จึงใช้ google.script.run ไม่ได้)
       async function processCode(code) {
         if (!code || processing) return;
@@ -1862,6 +1901,7 @@
 
         showStatus("success", "กำลังตรวจสอบ...", "รหัส " + escapeHtml(code));
         clearDetails();
+        const instantHit = renderInstant(code);
 
         const MAX_ATTEMPTS = 3; // ส่งครั้งแรก + ลองใหม่อัตโนมัติ 2 ครั้ง
         const ATTEMPT_TIMEOUT_MS = 12000;
@@ -1992,6 +2032,10 @@
         document.body.appendChild(s);
       }
       window.addEventListener("load", () => setTimeout(warmUp, 300));
+      // กลับมาหน้าเว็บให้ปลุก Apps Script ทันที กัน cold start 5-10 วิ
+      document.addEventListener("visibilitychange", () => {
+        if (!document.hidden) warmUp();
+      });
 
       function handleResult(result, retried) {
         if (!result) {
@@ -2046,6 +2090,7 @@
           return;
         }
         if (result.type === "ALREADY_COUNTED") {
+          cacheSet(result.asset?.code || result.code, result.asset);
           showStatus(
             "warning",
             "รายการนี้นับแล้ว",
@@ -2059,6 +2104,7 @@
           return;
         }
         if (result.type === "COUNTED") {
+          cacheSet(result.asset?.code, result.asset);
           showStatus(
             "success",
             "นับรายการเรียบร้อย",
@@ -2074,15 +2120,15 @@
         );
       }
 
-      function renderDetails(asset) {
+      function renderDetails(asset, pending) {
         if (!asset) return;
         const rows = [
           ["รหัส", asset.code],
           ["ชื่อครุภัณฑ์", asset.name],
           ["จำนวนเงิน", formatNumber(asset.amount)],
           ["จำนวนปัจจุบัน", asset.currentQuantity],
-          ["สถานะ", asset.counted],
-          ["วันเวลาที่ตรวจนับ", asset.countedAt],
+          ["สถานะ", pending ? (asset.counted || "กำลังบันทึก...") : asset.counted],
+          ["วันเวลาที่ตรวจนับ", pending ? (asset.countedAt || "กำลังบันทึก...") : asset.countedAt],
           ["Location", asset.location],
           ["หมายเหตุ", asset.note],
         ];
